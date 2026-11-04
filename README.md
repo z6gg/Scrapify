@@ -1,6 +1,26 @@
-# Scrapify
+<p align="center">
+  <img src="assets/demo.gif" alt="Scrapify demo" width="900">
+</p>
 
-Sync your playlists from Spotify to Anghami or vice versa **without Spotify Premium** via your own logins.
+<h1 align="center">Scrapify</h1>
+
+<p align="center">
+  Sync your playlists from Spotify to Anghami or vice versa <b>without Spotify Premium</b> via your own logins.
+</p>
+
+<hr>
+
+<p align="center">
+  <a href="https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe">
+    <img src="https://img.shields.io/badge/Download-4fc3f7?style=for-the-badge&logo=windows11&logoColor=white" alt="Download" height="40">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/z6gg/Scrapify/releases/latest"><img src="https://img.shields.io/github/v/release/z6gg/Scrapify?style=for-the-badge&label=version&color=a33ff0&labelColor=1b1d23" alt="Latest version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-1ed760?style=for-the-badge&labelColor=1b1d23" alt="License"></a>
+  <a href="https://github.com/z6gg/Scrapify/releases"><img src="https://img.shields.io/github/downloads/z6gg/Scrapify/total?style=for-the-badge&label=downloads&color=4fc3f7&labelColor=1b1d23" alt="Total downloads"></a>
+</p>
 
 ## Features
 
