@@ -1,6 +1,6 @@
 # Scrapify
 
-Keeps your playlists in sync between Spotify and Anghami, in the direction you choose. The source playlist is never touched. No API keys: it uses your own logins in a hidden browser.
+Sync your playlists from Spotify to Anghami or vice versa **without Spotify Premium** via your own logins.
 
 **Windows only.**
 
@@ -15,7 +15,7 @@ Keeps your playlists in sync between Spotify and Anghami, in the direction you c
 
 ## Install
 
-Download [Scrapify-Setup.exe](https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe) and run it. It installs the latest version just for you, no admin needed. Running it again updates or repairs it and keeps your settings.
+Run [Scrapify-Setup.exe](https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe) and it installs the latest version for you.
 
 Portable: download `Scrapify-<version>-windows-portable.zip` from the [latest release](https://github.com/z6gg/Scrapify/releases/latest), unzip it anywhere and open `Scrapify.exe`.
 
@@ -33,7 +33,7 @@ Your settings, logins and log are in `%LOCALAPPDATA%\Scrapify` (**Settings > Ope
 
 ## Uninstall
 
-Installed: remove it from **Settings > Apps** in Windows. It asks whether to keep your settings and logins.
+Setup: remove it from **Settings > Apps** in Windows. It asks whether to keep your settings and logins.
 
 Portable: turn off the background sync and **Start with Windows** on the Automation tab, quit Scrapify from the tray, then delete its folder (and `%LOCALAPPDATA%\Scrapify` to remove your data).
 
