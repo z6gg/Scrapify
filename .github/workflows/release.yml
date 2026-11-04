@@ -1,0 +1,76 @@
+# Builds the Windows app and publishes it as a GitHub release, only when version.py changes.
+#
+# To release: bump the version in version.py, add its section to CHANGELOG.md, commit and push.
+# The release is tagged v<version> and its notes come from that version's CHANGELOG.md section.
+# Pushing without touching version.py builds nothing. If a release for that version already
+# exists, the run stops without building. It can also be started by hand from the Actions tab.
+
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    paths: [version.py]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Read the version
+        id: ver
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python -c "from version import version; print(version)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists, bump version.py to make a new one."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building $version"
+          fi
+
+      - name: Cache Chromium
+        if: steps.ver.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: build/browsers
+          key: chromium-${{ hashFiles('requirements.txt') }}
+
+      - name: Build
+        if: steps.ver.outputs.skip != 'true'
+        run: python buildexe.py
+
+      - name: Publish release
+        if: steps.ver.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          zip="dist/Scrapify-$VERSION-windows.zip"
+          test -f "$zip"
+          # this version's section of CHANGELOG.md, from its "## x.y.z" heading to the next one
+          awk -v v="$VERSION" '$0 == "## " v {found=1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
+          gh release create "v$VERSION" "$zip" \
+            --target "$GITHUB_SHA" \
+            --title "Scrapify $VERSION" \
+            "${notes[@]}" \
+            --latest

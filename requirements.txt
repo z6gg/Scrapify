@@ -1,0 +1,14 @@
+playwright>=1.49.0
+rapidfuzz>=3.9.0
+psutil>=5.9.0
+
+# reading browser cookies off disk when Get Sessions can't read them live
+pywin32>=306; sys_platform == "win32"
+cryptography>=42.0.0
+
+# the tray icon in the built app
+pystray>=0.19.5
+Pillow>=10.0.0
+
+# only for building the app (buildexe.py)
+pyinstaller>=6.0.0

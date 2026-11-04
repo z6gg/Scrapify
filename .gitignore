@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+.venv/
+venv/
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# personal files, the app keeps these in %LOCALAPPDATA%\Scrapify but older versions kept them here
+config.json
+config.json.broken
+scrapify_settings.json
+*_session.json
+browser_paths.json
+anghami_playlist_ids.json
+spotify_search_template.json
+sync.log
+scrapify_sync.lock
+scrapify_autosync.pid
+debug_*
