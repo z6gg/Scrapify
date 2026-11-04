@@ -577,11 +577,11 @@ class ScrapifyApp:
         self._native_theme = ttk.Style(root).theme_use()
 
         # no title bar: the logo and window buttons sit in the tab row, like the browsers do it.
-        # built app only: source runs are python.exe, which tools like translucency mods restyle
-        # (and draw their own caption buttons over ours). the windows one also stays when asked
-        # for, or if hiding it doesn't work
+        # source runs too (python.exe), even though translucency mods aimed at python.exe draw their
+        # own caption buttons over ours. the windows one stays when asked for, or if hiding it
+        # doesn't work
         self.chrome = None
-        if (titlebar.on_windows and sysutil.frozen and sv_ttk is not None
+        if (titlebar.on_windows and sv_ttk is not None
                 and not self.settings.get("native_title_bar")):
             self.chrome = titlebar.Chrome(root)
         self.notebook = notebook = ttk.Notebook(root)
@@ -1647,11 +1647,10 @@ class ScrapifyApp:
         ttk.Checkbutton(box, text="Dark mode", variable=self.dark_mode_var,
                         command=self._on_dark_mode_changed).pack(anchor="w", padx=8, pady=(8, 2))
         self.native_title_bar_var = tk.BooleanVar(value=self.settings.get("native_title_bar", False))
-        note = "" if sysutil.frozen else " (built app only)"
-        check = ttk.Checkbutton(box, text="Use the Windows title bar" + (note if sysutil.on_windows else " (Windows only)"),
+        check = ttk.Checkbutton(box, text="Use the Windows title bar" + ("" if sysutil.on_windows else " (Windows only)"),
                                 variable=self.native_title_bar_var, command=self._on_native_title_bar_changed)
         check.pack(anchor="w", padx=8, pady=(2, 8))
-        if not sysutil.on_windows or not sysutil.frozen or sv_ttk is None:
+        if not sysutil.on_windows or sv_ttk is None:
             check.state(["disabled"])
 
         box = self._section(frame, "Closing the window",
