@@ -586,6 +586,7 @@ class ScrapifyApp:
         if self.chrome:
             if self.chrome.install():
                 self._build_chrome()
+                _use_themed_messages(self)  # message boxes get the same title bar
             else:
                 self.chrome = None
                 notebook.pack_configure(pady=8)
@@ -862,11 +863,14 @@ class ScrapifyApp:
     def _pair_dialog(self, initial=None):
         initial = initial or {}
         dialog = tk.Toplevel(self.root)
-        dialog.title("Playlist pair")
+        dialog.title("Edit playlist pair" if initial else "Add playlist pair")
         dialog.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
-        self._dark_title_bar(dialog)
+        self._decorate(dialog, dialog.title())
         dialog.transient(self.root)
         dialog.grab_set()
+        dialog_root = dialog
+        dialog = ttk.Frame(dialog_root)  # the fields, under the title bar
+        dialog.pack(fill="both", expand=True, padx=8, pady=(4, 0))
         fields = {"name": tk.StringVar(value=initial.get("name", "")),
                   "spotify": tk.StringVar(value=initial.get("spotify_playlist_url", "")),
                   "anghami": tk.StringVar(value=initial.get("anghami_playlist_url", ""))}
@@ -901,14 +905,15 @@ class ScrapifyApp:
                 if url != initial.get(f"{platform}_playlist_url", ""):
                     result.pop(f"cached_{platform}_tracks", None)  # a new link means a new song list
                 result[f"{platform}_playlist_url"] = url
-            dialog.destroy()
+            dialog_root.destroy()
 
         buttons = ttk.Frame(dialog)
         buttons.grid(row=4, column=0, columnspan=2, pady=8)
-        ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Cancel", command=dialog_root.destroy).pack(side="left", padx=6)
         ttk.Button(buttons, text="OK", command=on_ok, style=accent_button).pack(side="left")
-        dialog.bind("<Return>", lambda e: on_ok())
-        dialog.wait_window()
+        dialog_root.bind("<Return>", lambda e: on_ok())
+        dialog_root.bind("<Escape>", lambda e: dialog_root.destroy())
+        dialog_root.wait_window()
         return result or None
 
     def _add_pair_dialog(self):
@@ -960,7 +965,7 @@ class ScrapifyApp:
         win = tk.Toplevel(self.root)
         win.title(f"Exclude Songs: {pair['name']}")
         win.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
-        self._dark_title_bar(win)
+        self._decorate(win, win.title())
         win.transient(self.root)
         win.geometry("760x500")
         win.grab_set()
@@ -1710,25 +1715,68 @@ class ScrapifyApp:
 
     # the dialogs
 
-    def _dialog(self, title):
-        dialog = tk.Toplevel(self.root)
+    def _dialog(self, title, parent=None):
+        parent = parent or self.root
+        dialog = tk.Toplevel(parent)
         dialog.title(title)
-        dialog.transient(self.root)
+        if parent.winfo_viewable():  # a transient of a hidden window would stay hidden too
+            dialog.transient(parent)
         dialog.resizable(False, False)
         dialog.configure(background=self._colors["bg"])
-        self._dark_title_bar(dialog)
         if getattr(self, "_icons", None):
             try:
                 dialog.iconphoto(False, *self._icons)
             except tk.TclError:
                 pass
+        self._decorate(dialog, title)
         return dialog
 
+    def _decorate(self, window, title):
+        """
+        another window's title bar, matching the main one: scrapify's own when the main window
+        has it (packed at the top, so call this before packing anything else into the window),
+        otherwise windows' own, dark in dark mode
+        """
+        if self.chrome is None:
+            self._dark_title_bar(window)
+            return
+        chrome = titlebar.Chrome(window, maximizable=False)
+        header = chrome.header(window, title, self._small_icon())
+        header.pack(side="top", fill="x")
+        if not chrome.install():
+            header.destroy()
+            self._dark_title_bar(window)
+            return
+        p = self._colors
+        chrome.set_colors(bg=p["bg"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
+        window._scrapify_chrome = chrome  # its window callback has to live as long as the window
+
+    def _small_icon(self):
+        # the 16px icon for dialog title bars, made once
+        if getattr(self, "_small_icon_image", None) is None:
+            size = self.chrome.px(16)
+            try:
+                from PIL import Image, ImageTk
+                with Image.open(icon_path) as ico:
+                    sizes = ico.info.get("sizes") or {ico.size}
+                    ico.size = (size, size) if (size, size) in sizes else max(sizes)
+                    image = ico.convert("RGBA")
+                if image.size != (size, size):
+                    image = image.convert("RGBa").resize((size, size), Image.LANCZOS).convert("RGBA")
+                self._small_icon_image = ImageTk.PhotoImage(image, master=self.root)
+            except Exception:
+                return None
+        return self._small_icon_image
+
     def _show_dialog(self, dialog):
-        # centered on the main window, in front, taking the keyboard
+        # centered on the main window (on the screen while that's in the tray), in front, taking the keyboard
         dialog.update_idletasks()
-        x = self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_reqwidth()) // 2
-        y = self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_reqheight()) // 3
+        if self.root.winfo_viewable():
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_reqwidth()) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_reqheight()) // 3
+        else:
+            x = (dialog.winfo_screenwidth() - dialog.winfo_reqwidth()) // 2
+            y = (dialog.winfo_screenheight() - dialog.winfo_reqheight()) // 3
         dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
         dialog.lift()
         dialog.focus_force()
@@ -2367,6 +2415,94 @@ class ScrapifyApp:
 
 # one window at a time. a named mutex frees itself however the holder dies. a second launch
 # signals the named event instead and the open window shows itself
+class _ThemedMessages:
+    """
+    tkinter.messagebox's calls (same names, arguments and answers), drawn as scrapify windows
+    so they get the custom title bar and the theme. anything else falls through to the real one
+    """
+
+    def __init__(self, app, native):
+        self.app = app
+        self.native = native
+
+    def __getattr__(self, name):
+        return getattr(self.native, name)
+
+    def showinfo(self, title=None, message=None, **options):
+        return self._ask("info", title, message, [("OK", "ok", True)], options, "showinfo")
+
+    def showwarning(self, title=None, message=None, **options):
+        return self._ask("warning", title, message, [("OK", "ok", True)], options, "showwarning")
+
+    def showerror(self, title=None, message=None, **options):
+        return self._ask("error", title, message, [("OK", "ok", True)], options, "showerror")
+
+    def askyesno(self, title=None, message=None, **options):
+        no_default = options.get("default") == "no"
+        return self._ask("question", title, message, [("No", False, no_default), ("Yes", True, not no_default)],
+                         options, "askyesno")
+
+    def askokcancel(self, title=None, message=None, **options):
+        cancel_default = options.get("default") == "cancel"
+        return self._ask("question", title, message,
+                         [("Cancel", False, cancel_default), ("OK", True, not cancel_default)], options, "askokcancel")
+
+    def _ask(self, kind, title, message, choices, options, native_name):
+        if threading.current_thread() is not threading.main_thread():
+            # tk is main thread only: draw it there and wait for the answer
+            answer, done = {}, threading.Event()
+
+            def run():
+                try:
+                    answer["value"] = self._ask(kind, title, message, choices, options, native_name)
+                finally:
+                    done.set()
+            self.app.root.after(0, run)
+            done.wait()
+            return answer.get("value")
+        try:
+            return self._draw(kind, title, message, choices, options)
+        except Exception:
+            return getattr(self.native, native_name)(title, message, **options)
+
+    def _draw(self, kind, title, message, choices, options):
+        app = self.app
+        parent = (options.get("parent") or app.root).winfo_toplevel()
+        previous_grab = parent.grab_current()
+        dialog = app._dialog(title or app_name, parent=parent)
+        cancel_value = choices[0][1]  # escape and the close button mean the first, most careful answer
+        answer = {"value": cancel_value}
+
+        def choose(value):
+            answer["value"] = value
+            dialog.destroy()
+        app._buttons(dialog, *[(label, lambda v=value: choose(v), default) for label, value, default in choices])
+        dialog.bind("<Escape>", lambda e: choose(cancel_value))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(cancel_value))
+        row = ttk.Frame(dialog)
+        row.pack(fill="both", expand=True, padx=16, pady=(12, 4))
+        glyph, color = {"info": ("", app._colors.get("select_bg")), "question": ("", app._colors.get("select_bg")),
+                        "warning": ("", "#c19c00"), "error": ("", "#c42b1c")}[kind]
+        icon_font = app.chrome.icon_font if app.chrome else "Segoe MDL2 Assets"
+        tk.Label(row, text=glyph, font=(icon_font, 20), fg=color, bg=app._colors["bg"], bd=0).pack(
+            side="left", anchor="n", padx=(0, 14), pady=(2, 0))
+        ttk.Label(row, text=message or "", wraplength=400, justify="left").pack(side="left", anchor="w", fill="x")
+        app._show_dialog(dialog)
+        dialog.wait_window()
+        if previous_grab is not None:
+            try:
+                previous_grab.grab_set()  # a dialog that had it before ours gets it back
+            except tk.TclError:
+                pass
+        return answer["value"]
+
+
+def _use_themed_messages(app):
+    global messagebox
+    if not isinstance(messagebox, _ThemedMessages):
+        messagebox = _ThemedMessages(app, messagebox)
+
+
 _mutex_name = "Local\\ScrapifyGUISingleInstance"
 _show_event_name = "Local\\ScrapifyGUIShowWindow"
 _instance_mutex = None

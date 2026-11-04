@@ -69,13 +69,15 @@ def _frame_thickness(hwnd):
 class Chrome:
     """Hides the windows caption and hands out the pieces that replace it."""
 
-    def __init__(self, root):
+    def __init__(self, root, maximizable=True):
         self.root = root
+        self.maximizable = maximizable  # dialogs only close: no maximize on double click or top edge resize
         self.scale = root.winfo_fpixels("1i") / 96
         self.hwnd = None
         self._proc = None  # the callback has to outlive the subclass
         self.colors = {}
         self._painted = []  # widgets recolored by set_colors
+        self._texts = []  # labels drawn in the title color, dimmed while the window isn't active
         families = set(tkfont.families(root))
         self.icon_font = "Segoe Fluent Icons" if "Segoe Fluent Icons" in families else "Segoe MDL2 Assets"
         self.buttons = {}
@@ -88,13 +90,13 @@ class Chrome:
 
     # ------------------------------------------------------------- pieces
 
-    def caption_buttons(self, parent):
-        """Minimize, maximize and close; a rounded frame fades in behind each on hover."""
+    def caption_buttons(self, parent, names=("minimize", "maximize", "close")):
+        """Minimize, maximize and close (or just some); a rounded frame fades in behind each on hover."""
         frame = tk.Frame(parent, bd=0, highlightthickness=0)
         self._painted.append(frame)
         w, h = self.px(button_width), self.px(button_height)
-        for name, command in (("minimize", self._minimize), ("maximize", self._toggle_maximize),
-                              ("close", self._close)):
+        commands = {"minimize": self._minimize, "maximize": self._toggle_maximize, "close": self._close}
+        for name, command in ((n, commands[n]) for n in names):
             canvas = tk.Canvas(frame, width=w, height=h, bd=0, highlightthickness=0)
             canvas.pack(side="left")
             canvas.create_image(w // 2, h // 2, tags="pill", state="hidden")
@@ -107,6 +109,28 @@ class Chrome:
             canvas.bind("<ButtonRelease-1>", lambda e, c=command, b=canvas: c() if self._inside(e, b) else None)
             self.buttons[name] = canvas
         return frame
+
+    def header(self, parent, title, icon=None):
+        """
+        A dialog's whole title bar: its icon, its title and a close button, on a strip that
+        moves the window. Pack it first, at the top, before anything else goes in.
+        """
+        bar = tk.Frame(parent, bd=0, highlightthickness=0, height=self.px(button_height + 2))
+        bar.pack_propagate(False)
+        self._painted.append(bar)
+        buttons = self.caption_buttons(bar, names=("close",))
+        buttons.pack(side="right", padx=(0, self.px(4)))
+        if icon is not None:
+            self.logo(bar, icon).pack(side="left", padx=(self.px(12), 0))
+        text = tk.Label(bar, text=title, bd=0, padx=self.px(8 if icon is not None else 12), anchor="w",
+                        font=("Segoe UI Variable Text", 9) if "Segoe UI Variable Text" in tkfont.families(self.root)
+                        else ("Segoe UI", 9))
+        text.pack(side="left", fill="x", expand=True)
+        self._painted.append(text)
+        self._texts.append(text)
+        self.drag_area(bar)
+        self.drag_area(text)
+        return bar
 
     def logo(self, parent, image):
         label = tk.Label(parent, image=image, bd=0, padx=0, pady=0, highlightthickness=0)
@@ -121,7 +145,7 @@ class Chrome:
                 self.start_drag(HTTOP if self._on_top_edge(event) else HTCAPTION)
                 return "break"
         def double(event):
-            if where(event) and not self._on_top_edge(event):
+            if self.maximizable and where(event) and not self._on_top_edge(event):
                 self._toggle_maximize()
                 return "break"
         def motion(event):
@@ -155,6 +179,8 @@ class Chrome:
             return
         for widget in self._painted:
             widget.configure(bg=self.colors["bg"])
+        for text in self._texts:
+            text.configure(fg=self.colors["fg"] if self._is_active() else self.colors["muted"])
         for name, canvas in self.buttons.items():
             canvas.configure(bg=self.colors["bg"])
             self._draw_button(name)
@@ -237,7 +263,8 @@ class Chrome:
 
     def _on_top_edge(self, event):
         # the top few pixels resize, the way the windows caption's top edge does
-        return not self.maximized() and event.y_root - self.root.winfo_rooty() < max(2, self.px(5))
+        return (self.maximizable and not self.maximized()
+                and event.y_root - self.root.winfo_rooty() < max(2, self.px(5)))
 
     def start_drag(self, hit=HTCAPTION):
         if not self.hwnd:
