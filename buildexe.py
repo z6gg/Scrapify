@@ -4,10 +4,12 @@ builds the windows app into dist/Scrapify/ with chromium inside, then zips it fo
     python buildexe.py
 """
 
+import json
 import os
 import shutil
 import subprocess
 import sys
+import zipfile
 
 from version import version
 
@@ -57,4 +59,19 @@ shutil.copy2("LICENSE", app_dir)
 
 zip_path = shutil.make_archive(os.path.join(here, "dist", f"Scrapify-{version}-windows"), "zip",
                                os.path.dirname(app_dir), "Scrapify")
-print(f"\nDone: {app_dir}\nRelease zip: {zip_path}")
+
+# what the in-app updater downloads: the same folder without chromium, a fraction of the size.
+# update.json says which chromium this version needs, so the updater knows when only the full zip will do
+print("\nMaking the update zip...")
+update_zip = os.path.join(here, "dist", f"Scrapify-{version}-update.zip")
+with zipfile.ZipFile(update_zip, "w", zipfile.ZIP_DEFLATED) as z:
+    for folder, dirs, files in os.walk(app_dir):
+        rel = os.path.relpath(folder, os.path.dirname(app_dir))
+        if folder == app_dir:
+            dirs[:] = [d for d in dirs if d != "browsers"]
+        for name in files:
+            z.write(os.path.join(folder, name), os.path.join(rel, name))
+with open(os.path.join(here, "dist", "update.json"), "w", encoding="utf-8") as f:
+    json.dump({"version": version, "chromium": sorted(os.listdir(os.path.join(app_dir, "browsers")))}, f)
+
+print(f"\nDone: {app_dir}\nRelease zip: {zip_path}\nUpdate zip: {update_zip}")

@@ -25,6 +25,14 @@ from pathlib import Path
 
 import sysutil
 
+
+class AuthError(Exception):
+    """logged out, expired, or a captcha wall"""
+
+
+class PlaylistNotFoundError(Exception):
+    """logged in, but the link doesn't lead to a readable playlist"""
+
 exe_cache_file = "browser_paths.json"
 
 chromium_engine = "chromium"

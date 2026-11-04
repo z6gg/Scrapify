@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
 
 if getattr(sys, "frozen", False) and "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
@@ -34,6 +35,7 @@ except ImportError as e:
     sys.exit(1)
 
 from main import load_config, save_config
+import updater
 from version import version
 
 # the tray is for the built app people leave running, a source run closes like a normal window
@@ -71,6 +73,7 @@ default_settings = {
     "launch_minimized": False,
     "dark_mode": False,
     "minimize_on_close": True,
+    "check_updates": True,
 }
 muted_gray = "#606060"
 dark_colors = {"bg": "#1e1e1e", "fg": "#e6e6e6", "field_bg": "#2b2b2b", "button_bg": "#3c3c3c",
@@ -523,6 +526,11 @@ class ScrapifyApp:
                 self.root.after(200, self._minimize_to_tray)  # after the tray icon registers
         if self.settings.get("mode") == "open":
             self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
+        self._updating = False
+        if sysutil.frozen:
+            self.root.after(300, self._after_update)
+            if self.settings.get("check_updates", True):
+                self.root.after(3000, lambda: self._check_for_updates(quiet=True))
 
     # ---------------------------------------------------------------- helpers
 
@@ -1383,6 +1391,19 @@ class ScrapifyApp:
                 ttk.Button(box, text="Clear Debug Files", command=self._clear_debug_files).pack(anchor="w", padx=8, pady=(0, 4))
                 ttk.Button(box, text="Clear Sync Log", command=self._clear_sync_log).pack(anchor="w", padx=8, pady=(0, 8))
 
+        box = self._section(frame, "Updates",
+                            f"You have version {version}. Scrapify looks for a new version on GitHub each time it "
+                            "opens and asks before updating. Settings and logins stay as they are."
+                            + ("" if sysutil.frozen else " (built app only)"))
+        self.check_updates_var = tk.BooleanVar(value=self.settings.get("check_updates", True))
+        check = ttk.Checkbutton(box, text="Check for updates when Scrapify opens", variable=self.check_updates_var,
+                                command=lambda: self._save_setting("check_updates", self.check_updates_var.get()))
+        check.pack(anchor="w", padx=8, pady=(4, 4))
+        ttk.Button(box, text="Check Now", command=lambda: self._check_for_updates(quiet=False)).pack(
+            anchor="w", padx=8, pady=(0, 8))
+        if not sysutil.frozen:
+            check.state(["disabled"])
+
         box = self._section(frame, "Your Files",
                             f"Settings, logins and the sync log are kept in {sysutil.data_dir()}, not in the app folder.")
         ttk.Button(box, text="Open Folder", command=lambda: os.startfile(sysutil.data_dir())
@@ -1403,6 +1424,179 @@ class ScrapifyApp:
             var = self.config_toggles[f"opt_{key}"] = tk.BooleanVar(value=self.config[f"opt_{key}"])
             ttk.Checkbutton(box, text=label, variable=var,
                             command=self._toggle_setting(var, f"opt_{key}")).pack(anchor="w", padx=8, pady=(0, 4))
+
+    # ---------------------------------------------------------------- updates
+
+    def _check_for_updates(self, quiet):
+        # quiet is the check at launch: nothing shows unless there's an update
+        if not sysutil.frozen:
+            if not quiet:
+                messagebox.showinfo(app_name, "Running from source, so there's nothing to update here. "
+                                              "Pull the latest code instead.")
+            return
+        if self._updating:
+            return
+
+        def work():
+            try:
+                found = updater.check()
+            except Exception as e:
+                logging.getLogger(__name__).info(f"Couldn't check for updates: {e}")
+                if not quiet:
+                    self._ui(messagebox.showerror, app_name, f"Couldn't check for updates:\n{e}")
+                return
+            if found:
+                self._ui(self._offer_update, found)
+            elif not quiet:
+                self._ui(messagebox.showinfo, app_name, f"You have the latest version ({version}).")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _offer_update(self, found):
+        if self._updating:
+            return
+        self._restore_from_tray()
+        size = f"{found.size / 1_000_000:.0f} MB" if found.size else "the update"
+        if not updater.can_update():
+            if messagebox.askyesno(app_name, f"Scrapify {found.version} is out (you have {version}), but Scrapify "
+                                             f"can't write to its own folder:\n{sysutil.app_dir()}\n\n"
+                                             "Open the download page to update by hand?"):
+                webbrowser.open(updater.releases_page)
+            return
+        if not messagebox.askyesno(app_name, f"Scrapify {found.version} is out. You have {version}.\n\n"
+                                             f"Update now? It downloads {size} and restarts Scrapify. "
+                                             "Your settings, logins and playlist pairs stay as they are."):
+            return
+        # nothing may sync while files are swapped: hold the in app lock and the one every process shares
+        if self._refreshing or not self.sync_lock.acquire(blocking=False):
+            messagebox.showinfo(app_name, "A sync is running. Update once it's done, from Settings > Updates.")
+            return
+        shared_lock = sysutil.SyncLock()
+        if not shared_lock.acquire():
+            self.sync_lock.release()
+            messagebox.showinfo(app_name, "The background sync is in the middle of a sync. "
+                                          "Update once it's done, from Settings > Updates.")
+            return
+        self._updating = True
+        self.auto_stop.set()
+        self._download_update(found, shared_lock)
+
+    def _download_update(self, found, shared_lock):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Updating {app_name}")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        status = tk.StringVar(value=f"Downloading Scrapify {found.version}...")
+        ttk.Label(dialog, textvariable=status, width=50).pack(padx=16, pady=(16, 8), anchor="w")
+        bar = ttk.Progressbar(dialog, length=360, mode="determinate", maximum=100)
+        bar.pack(padx=16, pady=(0, 8))
+        cancelled = threading.Event()
+        cancel = ttk.Button(dialog, text="Cancel", command=cancelled.set)
+        cancel.pack(padx=16, pady=(0, 16), anchor="e")
+        dialog.protocol("WM_DELETE_WINDOW", cancelled.set)
+
+        def progress(done, total):
+            if total:
+                self._ui(lambda: (bar.configure(value=done * 100 / total),
+                                  status.set(f"Downloading Scrapify {found.version}... "
+                                             f"{done / 1_000_000:.0f} of {total / 1_000_000:.0f} MB")))
+
+        def give_up(message=None):
+            dialog.destroy()
+            shared_lock.release()
+            self.sync_lock.release()
+            self._updating = False
+            self.auto_stop.clear()
+            if self.settings.get("mode") == "open":
+                self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
+            updater.clean_leftovers()
+            if message:
+                messagebox.showerror(app_name, message)
+
+        def work():
+            try:
+                new_app = updater.download(found, progress, cancelled)
+            except updater.Cancelled:
+                self._ui(give_up)
+                return
+            except Exception as e:
+                self._ui(give_up, f"The update didn't download:\n{e}\n\nNothing was changed.")
+                return
+            self._ui(finish, new_app)
+
+        def finish(new_app):
+            status.set("Restarting Scrapify...")
+            cancel.state(["disabled"])
+            # the background sync runs from this same exe, so it has to stop too, and comes back after
+            restart_background = None
+            if is_background_sync_installed() and is_daemon_running():
+                restart_background = int(self.settings.get("interval_minutes", 30))
+            others = updater.other_app_processes()
+            for proc in others:
+                sysutil.kill_pid(proc.pid)
+            try:
+                updater.apply(new_app, found, [os.getpid()] + [p.pid for p in others], restart_background)
+            except Exception as e:
+                if restart_background:
+                    install_background_sync(restart_background)
+                give_up(f"Couldn't start the update:\n{e}\n\nNothing was changed.")
+                return
+            shared_lock.release()
+            _release_single_instance()  # or the new version would see us and quit
+            self._shutdown()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_update(self):
+        # the first launch after an update: say what changed, or that it didn't go through
+        info = updater.take_whats_new()
+        updater.clean_leftovers(min_age_seconds=300)
+        if not info:
+            return
+        interval = info.get("restart_background")
+        if interval and is_background_sync_installed() and not is_daemon_running():
+            try:
+                install_background_sync(int(interval))
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Couldn't restart the background sync after updating: {e}")
+            self.root.after(1500, self._refresh_background_status)
+        if not info.get("applied"):
+            self._restore_from_tray()
+            if messagebox.askyesno(app_name, f"The update to {info.get('version')} didn't go through, so you're "
+                                             f"still on {version}. {updater.update_log} in the data folder has "
+                                             "details.\n\nOpen the download page to update by hand?"):
+                webbrowser.open(updater.releases_page)
+            return
+        self._show_whats_new(info.get("from"), info.get("notes") or "")
+
+    def _show_whats_new(self, old_version, notes):
+        self._restore_from_tray()
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"What's new in {app_name} {version}")
+        dialog.transient(self.root)
+        dialog.geometry("560x420")
+        ttk.Label(dialog, text=f"Updated from {old_version} to {version}." if old_version else
+                  f"Updated to {version}.").pack(anchor="w", padx=12, pady=(12, 6))
+        # packed before the notes so a long list can't push it off the window
+        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(side="bottom", anchor="e", padx=12, pady=12)
+        body = ttk.Frame(dialog)
+        body.pack(fill="both", expand=True, padx=12)
+        text = tk.Text(body, wrap="word", relief="flat", padx=8, pady=8, height=10, font=("Segoe UI", 10))
+        scroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        if self.settings.get("dark_mode"):
+            p = dark_colors
+            dialog.configure(background=p["bg"])
+            text.configure(background=p["field_bg"], foreground=p["fg"], insertbackground=p["fg"])
+        text.tag_configure("heading", font=("Segoe UI", 11, "bold"), spacing1=6, spacing3=4)
+        for line in notes.splitlines():
+            if re.fullmatch(r"Scrapify \d+\.\d+\.\d+", line.strip()):
+                text.insert("end", line + "\n", "heading")
+            else:
+                text.insert("end", (line[2:] and "•  " + line[2:] if line.startswith(("- ", "* ")) else line) + "\n")
+        text.configure(state="disabled")
 
     def _on_dark_mode_changed(self):
         self._save_setting("dark_mode", self.dark_mode_var.get())

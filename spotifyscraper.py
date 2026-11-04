@@ -12,7 +12,7 @@ from pathlib import Path
 
 import browsersessioncommon as bsc
 from matcher import best_match, find_many
-from scrapify_errors import AuthError, PlaylistNotFoundError
+from browsersessioncommon import AuthError, PlaylistNotFoundError
 
 selectors = {
     # the header row is aria-rowindex 1

@@ -24,7 +24,7 @@ from playwright.sync_api import sync_playwright
 import browsersessioncommon as bsc
 from anghamiclient import AnghamiClient
 from matcher import match_pairs, pair_tracks, track_key
-from scrapify_errors import AuthError, PlaylistNotFoundError
+from browsersessioncommon import AuthError, PlaylistNotFoundError
 from spotifyscraper import SpotifyScraper
 from version import version
 

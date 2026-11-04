@@ -65,11 +65,12 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           zip="dist/Scrapify-$VERSION-windows.zip"
-          test -f "$zip"
+          update_zip="dist/Scrapify-$VERSION-update.zip"
+          test -f "$zip" && test -f "$update_zip" && test -f dist/update.json
           # this version's section of CHANGELOG.md, from its "## x.y.z" heading to the next one
           awk -v v="$VERSION" '$0 == "## " v {found=1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
           if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
-          gh release create "v$VERSION" "$zip" \
+          gh release create "v$VERSION" "$zip" "$update_zip" dist/update.json \
             --target "$GITHUB_SHA" \
             --title "Scrapify $VERSION" \
             "${notes[@]}" \

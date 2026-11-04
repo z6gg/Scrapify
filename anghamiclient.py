@@ -11,7 +11,7 @@ import urllib.parse
 
 import browsersessioncommon as bsc
 from matcher import best_match, find_many, has_arabic, is_same_artist, match_score, normalize
-from scrapify_errors import AuthError, PlaylistNotFoundError
+from browsersessioncommon import AuthError, PlaylistNotFoundError
 
 playlist_id_cache = "anghami_playlist_ids.json"
 selectors = {"track_row": "a.table-row", "track_title": ".cell-title span", "track_artist": ".cell-artist a"}

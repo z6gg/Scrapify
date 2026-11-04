@@ -26,6 +26,8 @@ Everything it needs is in that folder, including its own copy of Chromium. No ad
 
 Windows may warn about an unknown app the first time, since the exe isn't signed. Click More info > Run anyway.
 
+After that, Scrapify checks for a new version each time it opens and asks before updating itself. It shows what changed once it restarts. Most updates are small, since Chromium is only downloaded again when it changes. You can turn the check off on the Settings tab.
+
 ## Setup
 
 1. **Setup** tab: pick the browser you normally use and click **Get Sessions**. A private window opens; log into Spotify and Anghami there, then click OK in Scrapify. You only do this once, or again if a sync says your login expired.
@@ -73,7 +75,9 @@ Without the window:
 python buildexe.py
 ```
 
-Builds `dist/Scrapify/` with Chromium inside (downloaded once, then reused) and zips it as `dist/Scrapify-<version>-windows.zip`. The version comes from `version.py`, and changes are listed in `CHANGELOG.md`.
+Builds `dist/Scrapify/` with Chromium inside (downloaded once, then reused) and zips it as `dist/Scrapify-<version>-windows.zip`, plus a smaller `Scrapify-<version>-update.zip` without Chromium for the in-app updater. The version comes from `version.py`, and changes are listed in `CHANGELOG.md`.
+
+To release, bump `version.py`, add that version's section to `CHANGELOG.md` and push. GitHub Actions builds both zips and publishes the release, with that CHANGELOG section as its notes, which is also what the app shows after updating.
 
 ## Disclaimer
 
