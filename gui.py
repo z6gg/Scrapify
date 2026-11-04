@@ -881,8 +881,8 @@ class ScrapifyApp:
         self.get_sessions_btn = ttk.Button(box, text="Get Sessions", command=self._get_sessions_clicked,
                                            style=accent_button)
         self.get_sessions_btn.grid(row=3, column=2, **pad)
-        ttk.Label(box, text="You only need Get Sessions the first time, or when a sync fails with a login error.",
-                  style="Muted.TLabel", wraplength=460, justify="left").grid(row=5, column=0, columnspan=3,
+        ttk.Label(box, text="Note: you only need Get Sessions the first time, or when a sync fails with a login error.",
+                  style="Muted.TLabel").grid(row=5, column=0, columnspan=3,
                                                                              sticky="w", padx=8, pady=(0, 4))
 
         self.custom_exe_var = tk.StringVar(value=self.settings.get("custom_browser_exe", ""))
@@ -1756,6 +1756,13 @@ class ScrapifyApp:
             var = self.config_toggles[f"opt_{key}"] = tk.BooleanVar(value=self.config[f"opt_{key}"])
             ttk.Checkbutton(box, text=label, variable=var,
                             command=self._toggle_setting(var, f"opt_{key}")).pack(anchor="w", padx=8, pady=(0, 4))
+
+        box = self._section(frame, "About")
+        about = ttk.Frame(box)  # one block, so the lines sit close together like a credit
+        about.pack(anchor="w", padx=8)
+        ttk.Label(about, text=app_name, font="SunValleyBodyStrongFont").pack(anchor="w")
+        for line in (f"Version {version}", "Licensed under the GNU General Public License v3.0", "Created by z6"):
+            ttk.Label(about, text=line, style="Muted.TLabel").pack(anchor="w")
         self._even_out(frame)
 
     # ---------------------------------------------------------------- updates
@@ -2332,8 +2339,27 @@ class ScrapifyApp:
         if self.browser_var.get() == bsc.browser_names["other"]:
             box.grid_rowconfigure(6, minsize=height)
 
+    def _unstick_label_colors(self):
+        stack = [self.root]
+        while stack:
+            widget = stack.pop()
+            stack.extend(widget.winfo_children())
+            if isinstance(widget, ttk.Label) and str(widget.cget("foreground")):
+                widget.configure(foreground="")
+
     def _apply_sv_theme(self, dark):
         sv_ttk.set_theme("dark" if dark else "light", self.root)
+        # sun valley calls tk_setPalette (on the <<ThemeChanged>> event theme_use queues), which
+        # writes the text color onto every widget with a foreground option, ttk labels too, and
+        # makes it the default for new ones. set on the widget, it beats the style, so every grey
+        # note came out white (or black). right after it, labels go back to their style; the option
+        # keeps ones made later from getting it
+        self.root.option_add("*TLabel.foreground", "", 60)
+        if not getattr(self, "_unstick_bound", False):
+            self._unstick_bound = True
+            self.root.bind_class(self.root.winfo_class(), "<<ThemeChanged>>",
+                                 lambda e: self._unstick_label_colors(), add="+")
+        self._unstick_label_colors()
         p = self._colors = sv_colors[dark]
         style = ttk.Style(self.root)
         chrome = self.chrome is not None
