@@ -19,11 +19,13 @@ Pick a playlist on each side and Scrapify makes one match the other, adding and 
 
 ## Install
 
-Download `Scrapify-<version>-setup.exe` from the [latest release](https://github.com/z6gg/Scrapify/releases/latest) and run it. It installs just for you, with no admin needed, into `%LOCALAPPDATA%\Programs\Scrapify`. It adds Scrapify to the Start menu (and to the desktop if you tick the box), and lists it in Settings > Apps.
+Download [Scrapify-Setup.exe](https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe) and run it. It's small because it fetches the newest version from GitHub while it installs, so any copy of it always installs the latest Scrapify. Running it again on a PC that already has Scrapify replaces the old version with the latest one, and keeps your settings and logins.
+
+It installs just for you, with no admin needed, into `%LOCALAPPDATA%\Programs\Scrapify`. It adds Scrapify to the Start menu (and to the desktop if you tick the box), and lists it in Settings > Apps.
 
 **Or the portable way:** download `Scrapify-<version>-windows.zip`, unzip it anywhere and open `Scrapify.exe`. Keep the folder together; the exe needs the files next to it. Skip the `-update.zip`: that one is only for the app's own updater and has no Chromium.
 
-Either way, everything it needs comes with it, including its own copy of Chromium.
+Either way, everything it needs comes with it, including its own copy of Chromium. The installer needs an internet connection while it runs; the zip doesn't.
 
 **Scrapify isn't signed.** Windows SmartScreen will warn about an unknown app the first time you run the installer or the exe: click More info > Run anyway. Some antivirus programs may also flag it. Unsigned apps packed with PyInstaller get flagged often, and Scrapify reads your browser's saved logins when you use Get Sessions, which antivirus heuristics can mistake for something worse. If you'd rather not trust it, run it from source instead (below).
 
@@ -88,7 +90,7 @@ A copy run from source doesn't update itself. Pull the latest code instead.
 python buildexe.py
 ```
 
-Builds `dist/Scrapify/` with Chromium inside (downloaded once, then reused) and zips it as `dist/Scrapify-<version>-windows.zip`, plus a smaller `Scrapify-<version>-update.zip` without Chromium for the in-app updater. With [Inno Setup 6](https://jrsoftware.org/isdl.php) installed, it also builds the installer, `Scrapify-<version>-setup.exe`, from `installer.iss`. The version comes from `version.py`, and changes are listed in `CHANGELOG.md`.
+Builds `dist/Scrapify/` with Chromium inside (downloaded once, then reused) and zips it as `dist/Scrapify-<version>-windows.zip`, plus a smaller `Scrapify-<version>-update.zip` without Chromium for the in-app updater. With [Inno Setup 6](https://jrsoftware.org/isdl.php) installed, it also builds `Scrapify-Setup.exe` from `installer.iss`. The installer doesn't contain the app: it downloads whatever the latest release is when it runs. The version comes from `version.py`, and changes are listed in `CHANGELOG.md`.
 
 To release, bump `version.py`, add that version's section to `CHANGELOG.md` and push. GitHub Actions builds the installer and both zips and publishes the release, with that CHANGELOG section as its notes, which is also what the app shows after updating.
 

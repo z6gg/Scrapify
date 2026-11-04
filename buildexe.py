@@ -4,6 +4,7 @@ builds the windows app into dist/Scrapify/ with chromium inside, then zips it fo
     python buildexe.py
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -72,11 +73,19 @@ with zipfile.ZipFile(update_zip, "w", zipfile.ZIP_DEFLATED) as z:
             dirs[:] = [d for d in dirs if d != "browsers"]
         for name in files:
             z.write(os.path.join(folder, name), os.path.join(rel, name))
+# the installer reads it too: which version is the latest, and the checksum of its app zip
+digest = hashlib.sha256()
+with open(zip_path, "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        digest.update(chunk)
+zip_sha256 = digest.hexdigest()
 with open(os.path.join(here, "dist", "update.json"), "w", encoding="utf-8") as f:
-    json.dump({"version": version, "chromium": sorted(os.listdir(os.path.join(app_dir, "browsers")))}, f)
+    json.dump({"version": version, "chromium": sorted(os.listdir(os.path.join(app_dir, "browsers"))),
+               "windows_zip_sha256": zip_sha256}, f)
 
 
-# the installer, when Inno Setup 6 is around. --installer makes it a must (the release build)
+# the installer, when Inno Setup 6 is around. --installer makes it a must (the release build).
+# it doesn't contain the app: it downloads the latest release when it runs
 def find_iscc():
     candidates = [os.environ.get("ISCC"), shutil.which("iscc")]
     for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"),
@@ -86,7 +95,7 @@ def find_iscc():
     return next((c for c in candidates if c and os.path.isfile(c)), None)
 
 
-setup_path = os.path.join(here, "dist", f"Scrapify-{version}-setup.exe")
+setup_path = os.path.join(here, "dist", "Scrapify-Setup.exe")  # downloads the latest release itself
 iscc = find_iscc()
 if iscc:
     print("\nMaking the installer...")
