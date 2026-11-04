@@ -11,8 +11,8 @@
 <hr>
 
 <p align="center">
-  <a href="https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe">
-    <img src="assets/download.svg" alt="Download" width="240">
+  <a href="https://github.com/z6gg/Scrapify/releases/latest">
+    <img src="assets/download.svg" alt="Download" width="200">
   </a>
 </p>
 
