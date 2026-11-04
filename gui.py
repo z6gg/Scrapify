@@ -247,6 +247,47 @@ def is_autostart_installed():
     return sysutil.on_windows and _run_entry(autostart_entry) is not None
 
 
+class _ProgressText:
+    # turns update progress into what the window says, at most every `every` seconds
+
+    def __init__(self, new_version, every=0.15):
+        self.version = new_version
+        self.every = every
+        self.last = 0.0
+        self.stage = None
+        self.started = 0.0
+
+    def update(self, stage, done, total):
+        """(heading, detail, percent), or None when it's too soon to redraw"""
+        now = time.monotonic()
+        if stage != self.stage:
+            self.stage, self.started = stage, now
+        elif now - self.last < self.every and done < total:
+            return None
+        self.last = now
+        percent = done * 100 / total if total else 0
+        if stage != "download":
+            return f"Unpacking Scrapify {self.version}", f"Getting the files ready... {percent:.0f}%", percent
+        mb = lambda n: f"{n / 1_000_000:.1f}" if n < 10_000_000 else f"{n / 1_000_000:.0f}"
+        parts = [f"{mb(done)} of {mb(total)} MB" if total else f"{mb(done)} MB"]
+        elapsed = now - self.started
+        if elapsed > 1.5 and done:
+            speed = done / elapsed
+            parts.append(f"{speed / 1_000_000:.1f} MB/s")
+            if total and done < total:
+                parts.append(_time_left((total - done) / speed))
+        return f"Downloading Scrapify {self.version}", "   ·   ".join(parts), percent
+
+
+def _time_left(seconds):
+    if seconds < 5:
+        return "almost done"
+    if seconds < 60:
+        return f"about {max(5, int(round(seconds / 5) * 5))} seconds left"
+    minutes = round(seconds / 60)
+    return f"about {minutes} minute{'s' if minutes != 1 else ''} left"
+
+
 # ------------------------------------------------------------------ widgets
 
 class QueueLogHandler(logging.Handler):
@@ -529,7 +570,10 @@ class ScrapifyApp:
         if self.settings.get("mode") == "open":
             self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
         self._updating = False
+        self._checking = False
         self._declined_version = None
+        self._pending_update = None  # (update, unpacked folder) downloaded, waiting on a restart
+        self._restart_dialog = None
         if sysutil.frozen:
             self.root.after(300, self._after_update)
             self.root.after(3000, self._tick_update_check)
@@ -1395,20 +1439,28 @@ class ScrapifyApp:
 
         box = self._section(frame, "Updates",
                             f"You have version {version}. Scrapify looks for a new version on GitHub when it opens "
-                            "and twice a day while it runs. Settings and logins stay as they are when it updates."
-                            + ("" if sysutil.frozen else " (built app only)"))
+                            "and twice a day while it runs. Your settings, logins and playlist pairs are kept when it "
+                            "updates." + ("" if sysutil.frozen else " (built app only)"))
         self.check_updates_var = tk.BooleanVar(value=self.settings.get("check_updates", True))
         self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", False))
         check = ttk.Checkbutton(box, text="Check for updates automatically", variable=self.check_updates_var,
                                 command=self._on_check_updates_changed)
         check.pack(anchor="w", padx=8, pady=(4, 4))
         self.auto_update_check = ttk.Checkbutton(
-            box, text="Install updates without asking (Scrapify restarts on its own once no sync is running)",
-            variable=self.auto_update_var,
+            box, text="Download and install updates without asking", variable=self.auto_update_var,
             command=lambda: self._save_setting("auto_update", self.auto_update_var.get()))
-        self.auto_update_check.pack(anchor="w", padx=(28, 8), pady=(0, 4))
-        ttk.Button(box, text="Check for Updates Now", command=lambda: self._check_for_updates(quiet=False)).pack(
-            anchor="w", padx=8, pady=(4, 8))
+        self.auto_update_check.pack(anchor="w", padx=(28, 8), pady=(0, 0))
+        ttk.Label(box, text="Scrapify gives you 15 seconds' notice before it restarts, or installs quietly when "
+                            "it's in the tray.", style="Muted.TLabel", wraplength=640,
+                  justify="left").pack(anchor="w", padx=(50, 8), pady=(0, 4))
+        row = ttk.Frame(box)
+        row.pack(fill="x", padx=8, pady=(4, 8))
+        self.check_now_btn = ttk.Button(row, text="Check for Updates Now",
+                                        command=lambda: self._check_for_updates(quiet=False))
+        self.check_now_btn.pack(side="left")
+        self.update_status_var = tk.StringVar(value="" if sysutil.frozen else
+                                              "A copy run from source updates with git pull.")
+        ttk.Label(row, textvariable=self.update_status_var, style="Muted.TLabel").pack(side="left", padx=(10, 0))
         if not sysutil.frozen:
             check.state(["disabled"])
             self.auto_update_check.state(["disabled"])
@@ -1438,30 +1490,6 @@ class ScrapifyApp:
 
     # ---------------------------------------------------------------- updates
 
-    def _check_for_updates(self, quiet):
-        # quiet is the check at launch: nothing shows unless there's an update
-        if not sysutil.frozen:
-            if not quiet:
-                messagebox.showinfo(app_name, "Running from source, so there's nothing to update here. "
-                                              "Pull the latest code instead.")
-            return
-        if self._updating:
-            return
-
-        def work():
-            try:
-                found = updater.check()
-            except Exception as e:
-                logging.getLogger(__name__).info(f"Couldn't check for updates: {e}")
-                if not quiet:
-                    self._ui(messagebox.showerror, app_name, f"Couldn't check for updates:\n{e}")
-                return
-            if found:
-                self._ui(self._offer_update, found, quiet)
-            elif not quiet:
-                self._ui(messagebox.showinfo, app_name, f"You have the latest version ({version}).")
-        threading.Thread(target=work, daemon=True).start()
-
     def _on_check_updates_changed(self):
         on = self.check_updates_var.get()
         self._save_setting("check_updates", on)
@@ -1472,65 +1500,210 @@ class ScrapifyApp:
             self._check_for_updates(quiet=True)
         self.root.after(update_check_interval_ms, self._tick_update_check)
 
+    def _set_update_status(self, text):
+        if hasattr(self, "update_status_var"):
+            self.update_status_var.set(text)
+
+    def _check_for_updates(self, quiet):
+        # quiet is the automatic check: nothing pops up unless there's an update
+        if not sysutil.frozen:
+            if not quiet:
+                messagebox.showinfo(app_name, "This copy runs from source, so it doesn't update itself. "
+                                              "Pull the latest code instead.")
+            return
+        if self._pending_update:
+            if not quiet:
+                self._offer_restart(*self._pending_update)
+            return
+        if self._updating or self._checking:
+            return
+        self._checking = True
+        self._set_update_status("Checking for updates...")
+        self.check_now_btn.state(["disabled"])
+
+        def work():
+            try:
+                found, error = updater.check(), None
+            except Exception as e:
+                found, error = None, e
+                logging.getLogger(__name__).info(f"Couldn't check for updates: {e}")
+            self._ui(done, found, error)
+
+        def done(found, error):
+            self._checking = False
+            self.check_now_btn.state(["!disabled"])
+            stamp = time.strftime("%H:%M")
+            if error:
+                self._set_update_status(f"Couldn't reach GitHub at {stamp}.")
+                if not quiet:
+                    messagebox.showerror(app_name, "Couldn't check for updates. Check your internet connection "
+                                                   f"and try again.\n\n{error}")
+            elif not found:
+                self._set_update_status(f"Up to date. Last checked at {stamp}.")
+                if not quiet:
+                    messagebox.showinfo(app_name, f"You're up to date. Scrapify {version} is the latest version.")
+            else:
+                self._set_update_status(f"Scrapify {found.version} is available.")
+                self._offer_update(found, quiet)
+        threading.Thread(target=work, daemon=True).start()
+
     def _offer_update(self, found, quiet=False):
         if self._updating:
             return
         if quiet and found.version == self._declined_version:
-            return  # already said no to this one since opening
+            return  # already said not now to this one since opening
         if quiet and self.settings.get("auto_update") and updater.can_update():
             self._auto_update(found)
             return
         self._restore_from_tray()
-        size = f"{found.size / 1_000_000:.0f} MB" if found.size else "the update"
         if not updater.can_update():
             if messagebox.askyesno(app_name, f"Scrapify {found.version} is out (you have {version}), but Scrapify "
                                              f"can't write to its own folder:\n{sysutil.app_dir()}\n\n"
                                              "Open the download page to update by hand?"):
                 webbrowser.open(updater.releases_page)
             return
-        if not messagebox.askyesno(app_name, f"Scrapify {found.version} is out. You have {version}.\n\n"
-                                             f"Update now? It downloads {size} and restarts Scrapify. "
-                                             "Your settings, logins and playlist pairs stay as they are."):
+        if not self._ask_update(found):
             self._declined_version = found.version
+            self._set_update_status(f"Scrapify {found.version} is available. Update whenever you're ready.")
             return
-        # nothing may sync while files are swapped: hold the in app lock and the one every process shares
-        if self._refreshing or not self.sync_lock.acquire(blocking=False):
-            messagebox.showinfo(app_name, "A sync is running. Update once it's done, from Settings > Updates.")
-            return
-        shared_lock = sysutil.SyncLock()
-        if not shared_lock.acquire():
-            self.sync_lock.release()
-            messagebox.showinfo(app_name, "The background sync is in the middle of a sync. "
-                                          "Update once it's done, from Settings > Updates.")
+        shared_lock = self._take_update_locks()
+        if shared_lock is None:
+            messagebox.showinfo(app_name, "A sync is running right now. Update once it's done, from "
+                                          "Settings > Updates.")
             return
         self._updating = True
         self.auto_stop.set()
         self._download_update(found, shared_lock)
 
-    def _download_update(self, found, shared_lock):
-        dialog = tk.Toplevel(self.root)
-        dialog.title(f"Updating {app_name}")
-        dialog.resizable(False, False)
-        dialog.transient(self.root)
-        dialog.grab_set()
-        status = tk.StringVar(value=f"Downloading Scrapify {found.version}...")
-        ttk.Label(dialog, textvariable=status, width=50).pack(padx=16, pady=(16, 8), anchor="w")
-        bar = ttk.Progressbar(dialog, length=360, mode="determinate", maximum=100)
-        bar.pack(padx=16, pady=(0, 8))
-        cancelled = threading.Event()
-        cancel = ttk.Button(dialog, text="Cancel", command=cancelled.set)
-        cancel.pack(padx=16, pady=(0, 16), anchor="e")
-        dialog.protocol("WM_DELETE_WINDOW", cancelled.set)
+    def _take_update_locks(self):
+        # nothing may sync while files are swapped: the in app lock and the one every process shares.
+        # returns the shared lock, or None while a sync is running
+        if self._refreshing or not self.sync_lock.acquire(blocking=False):
+            return None
+        shared_lock = sysutil.SyncLock()
+        if not shared_lock.acquire():
+            self.sync_lock.release()
+            return None
+        return shared_lock
 
-        def progress(done, total):
-            if total:
-                self._ui(lambda: (bar.configure(value=done * 100 / total),
-                                  status.set(f"Downloading Scrapify {found.version}... "
-                                             f"{done / 1_000_000:.0f} of {total / 1_000_000:.0f} MB")))
+    # the dialogs
+
+    def _dialog(self, title):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        if self.settings.get("dark_mode"):
+            dialog.configure(background=dark_colors["bg"])
+        if getattr(self, "_icons", None):
+            try:
+                dialog.iconphoto(False, *self._icons)
+            except tk.TclError:
+                pass
+        return dialog
+
+    def _show_dialog(self, dialog):
+        # centered on the main window, in front, taking the keyboard
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_reqheight()) // 3
+        dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
+        dialog.lift()
+        dialog.focus_force()
+        try:
+            dialog.grab_set()
+        except tk.TclError:
+            pass
+
+    def _notes_box(self, parent, notes, height=10):
+        body = ttk.Frame(parent)
+        text = tk.Text(body, wrap="word", relief="flat", padx=10, pady=8, height=height, width=60,
+                       font=("Segoe UI", 10), cursor="arrow")
+        scroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        if self.settings.get("dark_mode"):
+            p = dark_colors
+            text.configure(background=p["field_bg"], foreground=p["fg"], insertbackground=p["fg"])
+        text.tag_configure("heading", font=("Segoe UI", 11, "bold"), spacing1=6, spacing3=4)
+        text.tag_configure("bullet", lmargin1=4, lmargin2=20, spacing3=2)
+        lines = (notes or "").strip().splitlines() or ["No notes for this version."]
+        for line in lines:
+            if re.fullmatch(r"Scrapify \d+\.\d+\.\d+", line.strip()):
+                text.insert("end", line.strip() + "\n", "heading")
+            elif line.startswith(("- ", "* ")):
+                text.insert("end", "•  " + line[2:] + "\n", "bullet")
+            else:
+                text.insert("end", line + "\n")
+        text.configure(state="disabled")
+        return body
+
+    @staticmethod
+    def _buttons(dialog, *specs):
+        # (label, command, is_default) from left to right, right aligned. returns the buttons
+        row = ttk.Frame(dialog)
+        row.pack(side="bottom", fill="x", padx=16, pady=(8, 14))
+        made = []
+        for label, command, default in reversed(specs):
+            button = ttk.Button(row, text=label, command=command, default="active" if default else "normal")
+            button.pack(side="right", padx=(8, 0), ipadx=6)
+            made.append(button)
+            if default:
+                dialog.bind("<Return>", lambda e, c=command: c())
+        return list(reversed(made))
+
+    def _ask_update(self, found):
+        dialog = self._dialog("Update available")
+        answer = {"yes": False}
+
+        def choose(yes):
+            answer["yes"] = yes
+            dialog.destroy()
+        self._buttons(dialog, ("Not Now", lambda: choose(False), False), ("Update Now", lambda: choose(True), True))
+        dialog.bind("<Escape>", lambda e: choose(False))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose(False))
+        ttk.Label(dialog, text=f"Scrapify {found.version} is available",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
+        size = f"{found.size / 1_000_000:.0f} MB" if found.size else "a few MB"
+        why = " This one includes a new version of the sync browser, so it's the whole app." if found.full else ""
+        ttk.Label(dialog, text=f"You have {version}. The update is a {size} download and Scrapify restarts "
+                               f"by itself when it's done.{why} Your settings, logins and playlist pairs are kept.",
+                  wraplength=470, justify="left").pack(anchor="w", padx=16)
+        ttk.Label(dialog, text="What's new", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=16, pady=(12, 4))
+        self._notes_box(dialog, found.notes, height=9).pack(fill="both", expand=True, padx=16)
+        self._show_dialog(dialog)
+        dialog.wait_window()
+        return answer["yes"]
+
+    def _download_update(self, found, shared_lock):
+        dialog = self._dialog(f"Updating {app_name}")
+        cancelled = threading.Event()
+        (cancel,) = self._buttons(dialog, ("Cancel", cancelled.set, False))
+        dialog.protocol("WM_DELETE_WINDOW", cancelled.set)
+        dialog.bind("<Escape>", lambda e: cancelled.set())
+        heading = tk.StringVar(value=f"Downloading Scrapify {found.version}")
+        ttk.Label(dialog, textvariable=heading, font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=16, pady=(14, 8))
+        bar = ttk.Progressbar(dialog, length=440, mode="determinate", maximum=100)
+        bar.pack(padx=16, fill="x")
+        detail = tk.StringVar(value="Connecting to GitHub...")
+        ttk.Label(dialog, textvariable=detail).pack(anchor="w", padx=16, pady=(6, 0))
+        ttk.Label(dialog, text="Syncing is paused until the update is done. Cancel any time, nothing changes "
+                               "until the download is complete.", style="Muted.TLabel", wraplength=440,
+                  justify="left").pack(anchor="w", padx=16, pady=(8, 0))
+        self._show_dialog(dialog)
+        tracker = _ProgressText(found.version)
+
+        def progress(stage, done, total):
+            line = tracker.update(stage, done, total)
+            if line:
+                self._ui(lambda: (heading.set(line[0]), detail.set(line[1]), bar.configure(value=line[2])))
 
         def give_up(message=None):
             dialog.destroy()
             self._abort_update(shared_lock)
+            self._set_update_status(f"Scrapify {found.version} is available." if message is None
+                                    else f"The update to {found.version} didn't finish.")
             if message:
                 messagebox.showerror(app_name, message)
 
@@ -1541,53 +1714,128 @@ class ScrapifyApp:
                 self._ui(give_up)
                 return
             except Exception as e:
-                self._ui(give_up, f"The update didn't download:\n{e}\n\nNothing was changed.")
+                self._ui(give_up, f"The update didn't finish downloading, so nothing was changed and you're "
+                                  f"still on {version}.\n\n{e}")
                 return
             self._ui(finish, new_app)
 
         def finish(new_app):
-            status.set("Restarting Scrapify...")
+            heading.set("Restarting Scrapify")
+            detail.set(f"Scrapify closes, installs {found.version} and opens again in a few seconds.")
             cancel.state(["disabled"])
+            dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+            bar.configure(mode="indeterminate")
+            bar.start(12)
+            # a moment to read it before the window goes
+            self.root.after(1200, lambda: restart(new_app))
+
+        def restart(new_app):
             problem = self._swap_and_restart(found, new_app, shared_lock)
             if problem:
-                give_up(f"Couldn't start the update:\n{problem}\n\nNothing was changed.")
+                give_up(f"Couldn't start the update, so nothing was changed and you're still on {version}."
+                        f"\n\n{problem}")
 
         threading.Thread(target=work, daemon=True).start()
+
+    # automatic updates
 
     def _auto_update(self, found):
         # downloads in the background, then installs at the first moment no sync is running
         self._updating = True
         log = logging.getLogger(__name__)
         log.info(f"Downloading Scrapify {found.version} in the background")
+        self._set_update_status(f"Downloading Scrapify {found.version}...")
+        tracker = _ProgressText(found.version, every=0.5)
+
+        def progress(stage, done, total):
+            line = tracker.update(stage, done, total)
+            if line:
+                self._ui(self._set_update_status, f"{line[0]}: {line[2]:.0f}%")
 
         def work():
             try:
-                new_app = updater.download(found)
+                new_app = updater.download(found, progress)
             except Exception as e:
                 log.warning(f"The automatic update to {found.version} didn't download: {e}")
+                self._ui(self._set_update_status, f"The update to {found.version} didn't download. "
+                                                  "It'll try again later.")
                 self._ui(self._abort_update, None)
                 return
-            self._ui(self._install_when_idle, found, new_app)
+            self._ui(self._auto_ready, found, new_app)
         threading.Thread(target=work, daemon=True).start()
 
-    def _install_when_idle(self, found, new_app):
-        retry = lambda: self.root.after(60_000, lambda: self._install_when_idle(found, new_app))
-        if self._refreshing or not self.sync_lock.acquire(blocking=False):
-            retry()
+    def _auto_ready(self, found, new_app):
+        self._pending_update = (found, new_app)
+        self._set_update_status(f"Scrapify {found.version} is ready to install.")
+        if self.root.state() == "normal":
+            self._offer_restart(found, new_app, countdown=15)
+        else:
+            self._install_when_idle(found, new_app)  # in the tray, nobody's looking: just do it
+
+    def _offer_restart(self, found, new_app, countdown=None):
+        if getattr(self, "_restart_dialog", None) is not None:
             return
-        shared_lock = sysutil.SyncLock()
-        if not shared_lock.acquire():
-            self.sync_lock.release()
-            retry()
+        self._restore_from_tray()
+        dialog = self._restart_dialog = self._dialog("Update ready")
+        state = {"left": countdown, "after": None}
+
+        def close():
+            if state["after"]:
+                self.root.after_cancel(state["after"])
+            self._restart_dialog = None
+            dialog.destroy()
+
+        def later():
+            close()
+            self._set_update_status(f"Scrapify {found.version} installs when you quit Scrapify. Click Check for "
+                                    "Updates Now to restart sooner.")
+
+        def now():
+            close()
+            self._install_when_idle(found, new_app)
+
+        self._buttons(dialog, ("Later", later, False), ("Restart Now", now, True))
+        dialog.bind("<Escape>", lambda e: later())
+        dialog.protocol("WM_DELETE_WINDOW", later)
+        ttk.Label(dialog, text=f"Scrapify {found.version} is ready to install",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
+        message = tk.StringVar()
+        ttk.Label(dialog, textvariable=message, wraplength=440, justify="left").pack(anchor="w", padx=16)
+        ttk.Label(dialog, text="It takes a few seconds, and you'll see what's new once it's back. Choose Later and it "
+                               "installs when you quit Scrapify.", style="Muted.TLabel", wraplength=440,
+                  justify="left").pack(anchor="w", padx=16, pady=(8, 0))
+
+        def tick():
+            if state["left"] is None:
+                message.set("Scrapify needs to restart to finish updating.")
+                return
+            if state["left"] <= 0:
+                now()
+                return
+            message.set(f"Scrapify will restart in {state['left']} second{'s' if state['left'] != 1 else ''} "
+                        "to finish updating.")
+            state["left"] -= 1
+            state["after"] = self.root.after(1000, tick)
+        tick()
+        self._show_dialog(dialog)
+
+    def _install_when_idle(self, found, new_app):
+        shared_lock = self._take_update_locks()
+        if shared_lock is None:
+            self._set_update_status(f"Scrapify {found.version} installs as soon as the current sync finishes.")
+            self.root.after(30_000, lambda: self._install_when_idle(found, new_app))
             return
         self.auto_stop.set()
-        self._notify(f"Updating to Scrapify {found.version}. It restarts in a moment.", always=True)
+        self._notify(f"Updating to Scrapify {found.version}. It'll be back in a few seconds.", always=True)
         problem = self._swap_and_restart(found, new_app, shared_lock)
         if problem:
-            logging.getLogger(__name__).warning(f"The automatic update to {found.version} didn't start: {problem}")
+            logging.getLogger(__name__).warning(f"The update to {found.version} didn't start: {problem}")
+            self._set_update_status(f"The update to {found.version} didn't start. It'll try again later.")
             self._abort_update(shared_lock)
 
-    def _swap_and_restart(self, found, new_app, shared_lock):
+    # the swap itself
+
+    def _swap_and_restart(self, found, new_app, shared_lock, relaunch=True):
         # hands the swap to the update script and quits. returns what went wrong, or None
         # the background sync runs from this same exe, so it has to stop too, and comes back after
         restart_background = None
@@ -1597,7 +1845,7 @@ class ScrapifyApp:
         for proc in others:
             sysutil.kill_pid(proc.pid)
         try:
-            updater.apply(new_app, found, [os.getpid()] + [p.pid for p in others], restart_background)
+            updater.apply(new_app, found, [os.getpid()] + [p.pid for p in others], restart_background, relaunch)
         except Exception as e:
             if restart_background:
                 try:
@@ -1605,10 +1853,21 @@ class ScrapifyApp:
                 except Exception:
                     pass
             return str(e) or type(e).__name__
+        self._pending_update = None  # handled, so quitting doesn't try again
         shared_lock.release()
-        _release_single_instance()  # or the new version would see us and quit
-        self._shutdown()
+        if relaunch:
+            _release_single_instance()  # or the new version would see us and quit
+            self._shutdown()
         return None
+
+    def _install_on_quit(self):
+        # Later was picked: the downloaded update goes in now, without opening the app again
+        found, new_app = self._pending_update
+        shared_lock = self._take_update_locks()
+        if shared_lock is None:
+            return  # a sync is running, the next check downloads it again
+        if self._swap_and_restart(found, new_app, shared_lock, relaunch=False):
+            shared_lock.release()
 
     def _abort_update(self, shared_lock):
         # back to normal after an update that was cancelled or failed
@@ -1616,10 +1875,13 @@ class ScrapifyApp:
             shared_lock.release()
             self.sync_lock.release()
         self._updating = False
+        self._pending_update = None
         self.auto_stop.clear()
         if self.settings.get("mode") == "open":
             self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
         updater.clean_leftovers()
+
+    # after an update
 
     def _after_update(self):
         # the first launch after an update: say what changed, or that it didn't go through
@@ -1637,40 +1899,24 @@ class ScrapifyApp:
         if not info.get("applied"):
             self._restore_from_tray()
             if messagebox.askyesno(app_name, f"The update to {info.get('version')} didn't go through, so you're "
-                                             f"still on {version}. {updater.update_log} in the data folder has "
-                                             "details.\n\nOpen the download page to update by hand?"):
+                                             f"still on {version}. Nothing was lost.\n\n{updater.update_log} in the "
+                                             "data folder has the details. Open the download page to update by hand?"):
                 webbrowser.open(updater.releases_page)
             return
+        self._set_update_status(f"Updated to {version}.")
         self._show_whats_new(info.get("from"), info.get("notes") or "")
 
     def _show_whats_new(self, old_version, notes):
         self._restore_from_tray()
-        dialog = tk.Toplevel(self.root)
-        dialog.title(f"What's new in {app_name} {version}")
-        dialog.transient(self.root)
-        dialog.geometry("560x420")
-        ttk.Label(dialog, text=f"Updated from {old_version} to {version}." if old_version else
-                  f"Updated to {version}.").pack(anchor="w", padx=12, pady=(12, 6))
-        # packed before the notes so a long list can't push it off the window
-        ttk.Button(dialog, text="OK", command=dialog.destroy).pack(side="bottom", anchor="e", padx=12, pady=12)
-        body = ttk.Frame(dialog)
-        body.pack(fill="both", expand=True, padx=12)
-        text = tk.Text(body, wrap="word", relief="flat", padx=8, pady=8, height=10, font=("Segoe UI", 10))
-        scroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
-        text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        text.pack(side="left", fill="both", expand=True)
-        if self.settings.get("dark_mode"):
-            p = dark_colors
-            dialog.configure(background=p["bg"])
-            text.configure(background=p["field_bg"], foreground=p["fg"], insertbackground=p["fg"])
-        text.tag_configure("heading", font=("Segoe UI", 11, "bold"), spacing1=6, spacing3=4)
-        for line in notes.splitlines():
-            if re.fullmatch(r"Scrapify \d+\.\d+\.\d+", line.strip()):
-                text.insert("end", line + "\n", "heading")
-            else:
-                text.insert("end", (line[2:] and "•  " + line[2:] if line.startswith(("- ", "* ")) else line) + "\n")
-        text.configure(state="disabled")
+        dialog = self._dialog(f"What's new in {app_name} {version}")
+        self._buttons(dialog, ("OK", dialog.destroy, True))
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        ttk.Label(dialog, text=f"Scrapify is now on {version}",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
+        ttk.Label(dialog, text=f"Here's what changed since {old_version}." if old_version else "Here's what changed.",
+                  ).pack(anchor="w", padx=16, pady=(0, 8))
+        self._notes_box(dialog, notes, height=12).pack(fill="both", expand=True, padx=16)
+        self._show_dialog(dialog)
 
     def _on_dark_mode_changed(self):
         self._save_setting("dark_mode", self.dark_mode_var.get())
@@ -1722,6 +1968,8 @@ class ScrapifyApp:
         style.map("Treeview", background=[("selected", p["select_bg"])], foreground=[("selected", p["select_fg"])])
         style.configure("Treeview.Heading", background=p["button_bg"], foreground=p["fg"])
         style.configure("TScrollbar", background=p["button_bg"], troughcolor=p["bg"], bordercolor=p["border"], arrowcolor=p["fg"])
+        style.configure("Horizontal.TProgressbar", background=p["select_bg"], troughcolor=p["field_bg"],
+                        bordercolor=p["border"], lightcolor=p["select_bg"], darkcolor=p["select_bg"])
         self.log_text.configure(bg=p["field_bg"], fg=p["fg"], insertbackground=p["fg"])
         for canvas in self._theme_canvases:
             canvas.configure(bg=p["bg"])
@@ -1844,6 +2092,11 @@ class ScrapifyApp:
             self._shutdown()
 
     def _shutdown(self):
+        if self._pending_update:
+            try:
+                self._install_on_quit()
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Couldn't install the update on quit: {e}")
         self.auto_stop.set()
         if self.tray_icon is not None:
             try:

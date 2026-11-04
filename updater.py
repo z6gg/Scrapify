@@ -138,19 +138,26 @@ class Cancelled(Exception):
 
 
 def download(update, progress=None, cancelled=None):
-    """downloads and unpacks the update. returns the unpacked Scrapify folder"""
+    """
+    downloads and unpacks the update. returns the unpacked Scrapify folder.
+    progress(stage, done, total) is called along the way, stage is "download" or "unpack"
+    """
     clean_leftovers()
     stage = staging_dir()
     os.makedirs(stage, exist_ok=True)
     zip_path = os.path.join(stage, "update.zip")
     sha = hashlib.sha256()
+
+    def check_cancel():
+        if cancelled is not None and cancelled.is_set():
+            raise Cancelled()
+
     request = urllib.request.Request(update.url, headers={"User-Agent": f"Scrapify/{version}"})
     with urllib.request.urlopen(request, timeout=30) as response, open(zip_path, "wb") as f:
         total = int(response.headers.get("Content-Length") or update.size or 0)
         done = 0
         while True:
-            if cancelled is not None and cancelled.is_set():
-                raise Cancelled()
+            check_cancel()
             chunk = response.read(256 * 1024)
             if not chunk:
                 break
@@ -158,14 +165,23 @@ def download(update, progress=None, cancelled=None):
             sha.update(chunk)
             done += len(chunk)
             if progress:
-                progress(done, total)
+                progress("download", done, total)
     if total and done != total:
-        raise OSError(f"The download stopped early ({done} of {total} bytes).")
+        raise OSError(f"The download stopped early ({done // 1_000_000} of {total // 1_000_000} MB). "
+                      "Check your internet connection and try again.")
     if update.sha256 and sha.hexdigest() != update.sha256.lower():
-        raise OSError("The download doesn't match the release's checksum.")
+        raise OSError("The download came through damaged. Try again.")
     unpacked = os.path.join(stage, "new")
     with zipfile.ZipFile(zip_path) as z:
-        z.extractall(unpacked)
+        members = z.infolist()
+        total = sum(m.file_size for m in members) or 1
+        done = 0
+        for member in members:
+            check_cancel()
+            z.extract(member, unpacked)
+            done += member.file_size
+            if progress:
+                progress("unpack", done, total)
     os.remove(zip_path)
     app = os.path.join(unpacked, "Scrapify")
     if not os.path.isfile(os.path.join(app, exe_name)):
@@ -199,10 +215,49 @@ $old = __OLD__
 $stage = __STAGE__
 $log = __LOG__
 $data = __DATA__
+$relaunch = __RELAUNCH__
 function Log($m) { try { Add-Content -LiteralPath $log -Value "$(Get-Date -Format s) $m" -Encoding UTF8 } catch {} }
 
-foreach ($p in @(__PIDS__)) { try { Wait-Process -Id $p -Timeout 120 -ErrorAction Stop } catch {} }
-Start-Sleep -Milliseconds 500
+# a small window so there's something on screen between the app closing and opening again
+$form = $null
+try {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Updating Scrapify'
+    $form.FormBorderStyle = 'FixedDialog'
+    $form.ControlBox = $false
+    $form.StartPosition = 'CenterScreen'
+    $form.TopMost = $true
+    $form.ShowInTaskbar = $true
+    $form.ClientSize = New-Object System.Drawing.Size(380, 110)
+    $form.Font = New-Object System.Drawing.Font('Segoe UI', 9.5)
+    try { $form.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon((Join-Path $new '__EXE__')) } catch {}
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = 'Installing Scrapify __VERSION__...'
+    $title.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+    $title.AutoSize = $true
+    $title.Location = New-Object System.Drawing.Point(18, 14)
+    $sub = New-Object System.Windows.Forms.Label
+    $sub.Text = $(if ($relaunch) { 'Scrapify will open again in a moment.' } else { 'It will be ready the next time you open Scrapify.' })
+    $sub.AutoSize = $true
+    $sub.Location = New-Object System.Drawing.Point(19, 42)
+    $bar = New-Object System.Windows.Forms.ProgressBar
+    $bar.Style = 'Marquee'
+    $bar.MarqueeAnimationSpeed = 25
+    $bar.Location = New-Object System.Drawing.Point(20, 72)
+    $bar.Size = New-Object System.Drawing.Size(340, 18)
+    $form.Controls.AddRange(@($title, $sub, $bar))
+    $form.Show()
+} catch { $form = $null }
+function Pump { if ($form) { [System.Windows.Forms.Application]::DoEvents() } }
+function Pause($ms) { $until = (Get-Date).AddMilliseconds($ms); while ((Get-Date) -lt $until) { Pump; Start-Sleep -Milliseconds 30 } }
+
+foreach ($p in @(__PIDS__)) {
+    $until = (Get-Date).AddSeconds(120)
+    while ((Get-Process -Id $p -ErrorAction SilentlyContinue) -and (Get-Date) -lt $until) { Pause 100 }
+}
+Pause 500
 
 $moved = @()
 $ok = $true
@@ -214,10 +269,11 @@ try {
             # a file can stay locked for a moment after its process exits
             for ($i = 0; ; $i++) {
                 try { Move-Item -LiteralPath $target -Destination (Join-Path $old $item.Name) -Force; break }
-                catch { if ($i -ge 30) { throw }; Start-Sleep -Milliseconds 500 }
+                catch { if ($i -ge 30) { throw }; Pause 500 }
             }
             $moved += $item.Name
         }
+        Pump
         Move-Item -LiteralPath $item.FullName -Destination $target
     }
     Log "updated to __VERSION__"
@@ -231,16 +287,20 @@ try {
     }
 }
 
-Start-Process -FilePath (Join-Path $app '__EXE__') -WorkingDirectory $data
+if ($relaunch) {
+    Start-Process -FilePath (Join-Path $app '__EXE__') -WorkingDirectory $data
+    Pause 1500  # until the app's own window is up
+}
+if ($form) { $form.Close() }
 if ($ok) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
 """
 
 
-def apply(new_app, update, wait_pids, restart_background=None):
+def apply(new_app, update, wait_pids, restart_background=None, relaunch=True):
     """
     starts the swap. the caller exits right after, the script waits for every pid in wait_pids.
     restart_background is the background sync's interval when it was running, so the new
-    version can start it again
+    version can start it again. relaunch=False installs without opening the app afterwards
     """
     with open(whats_new_file, "w", encoding="utf-8") as f:
         json.dump({"version": update.version, "from": version, "notes": update.notes,
@@ -252,6 +312,7 @@ def apply(new_app, update, wait_pids, restart_background=None):
                        ("__LOG__", _ps(os.path.join(sysutil.data_dir(), update_log))),
                        ("__DATA__", _ps(sysutil.data_dir())),
                        ("__PIDS__", ",".join(str(int(p)) for p in wait_pids) or ""),
+                       ("__RELAUNCH__", "$true" if relaunch else "$false"),
                        ("__VERSION__", update.version), ("__EXE__", exe_name)):
         script = script.replace(key, value)
     # outside the staging folder so the script can delete that folder when it's done
