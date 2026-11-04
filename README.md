@@ -19,12 +19,12 @@ Pick a playlist on each side and Scrapify makes one match the other, adding and 
 
 ## Install
 
-1. Download `Scrapify-<version>-windows.zip` from the releases page.
+1. Download `Scrapify-<version>-windows.zip` from the [latest release](https://github.com/z6gg/Scrapify/releases/latest). Not the `-update.zip`, that one is only for the app's own updater and has no Chromium.
 2. Unzip it anywhere and open `Scrapify.exe`. Keep the folder together; the exe needs the files next to it.
 
 Everything it needs is in that folder, including its own copy of Chromium. No admin needed.
 
-Windows may warn about an unknown app the first time, since the exe isn't signed. Click More info > Run anyway.
+**The exe isn't signed.** Windows SmartScreen will warn about an unknown app the first time: click More info > Run anyway. Some antivirus programs may also flag it. Unsigned apps packed with PyInstaller get flagged often, and Scrapify reads your browser's saved logins when you use Get Sessions, which antivirus heuristics can mistake for something worse. If you'd rather not trust the exe, run it from source instead (below).
 
 After that, Scrapify checks for a new version each time it opens and asks before updating itself. It shows what changed once it restarts. Most updates are small, since Chromium is only downloaded again when it changes. On the Settings tab you can turn the check off, check by hand, or let it install updates without asking.
 
@@ -49,6 +49,12 @@ Settings, logins and the log live in `%LOCALAPPDATA%\Scrapify`, not in the app f
 
 `spotify_session.json` and `anghami_session.json` in there are your logins. Don't share them.
 
+## Uninstall
+
+1. On the **Automation** tab, remove the background sync and turn off **Start with Windows** if you used them. Both add an entry that starts Scrapify when you log on.
+2. Close Scrapify, including from the tray, and delete its folder.
+3. To remove your settings, logins and log too, delete `%LOCALAPPDATA%\Scrapify`.
+
 ## How Matching Works
 
 Songs are compared by title, artist and length. Anghami gives every song's name in both scripts, and when that's missing, both spellings get cut down to their consonants, so `Tamally Maak` and `تملي معاك` still match. If search doesn't find a song, the artist's own song list is checked too.
@@ -69,6 +75,8 @@ Without the window:
 - `python main.py` runs one sync in the direction set in the app
 - `python main.py --dry-run` logs what a sync would change, and changes nothing
 
+A copy run from source doesn't update itself. Pull the latest code instead.
+
 ## Build
 
 ```
@@ -83,7 +91,7 @@ To release, bump `version.py`, add that version's section to `CHANGELOG.md` and 
 
 Scrapify isn't affiliated with, endorsed by or connected to Spotify or Anghami. It works by using their web players the same way your browser does, through requests they don't publish or support. That's very likely against their terms of service.
 
-Use it on your own account and at your own risk. Either service could change its player and break Scrapify at any time, or restrict accounts that use tools like this. Your logins stay on your computer and are only ever sent to Spotify and Anghami themselves.
+Use it on your own account and at your own risk. Either service could change its player and break Scrapify at any time, or restrict accounts that use tools like this. Your logins stay on your computer and are only ever sent to Spotify and Anghami themselves. The only other site Scrapify contacts is GitHub, to check for and download updates.
 
 ## License
 
