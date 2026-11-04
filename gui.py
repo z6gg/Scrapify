@@ -22,6 +22,7 @@ if getattr(sys, "frozen", False) and "PLAYWRIGHT_BROWSERS_PATH" not in os.enviro
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter import font as tkfont
 
 try:
     from playwright.sync_api import sync_playwright
@@ -35,8 +36,15 @@ except ImportError as e:
     sys.exit(1)
 
 from main import load_config, save_config
+import titlebar
 import updater
 from version import version
+
+try:
+    import sv_ttk  # sun valley, the windows 11 look
+except ImportError:
+    sv_ttk = None
+accent_button = "Accent.TButton" if sv_ttk else "TButton"  # the filled blue one for the main action
 
 # the tray is for the built app people leave running, a source run closes like a normal window
 has_tray = False
@@ -72,12 +80,20 @@ default_settings = {
     "selected_browser": "Chrome",
     "launch_minimized": False,
     "dark_mode": False,
+    "native_title_bar": False,
     "minimize_on_close": True,
     "check_updates": True,
     "auto_update": False,
 }
 update_check_interval_ms = 12 * 60 * 60 * 1000  # while scrapify stays open in the tray
 muted_gray = "#606060"
+# tk (not ttk) widgets don't follow the ttk theme, these match sun valley
+sv_colors = {
+    False: {"bg": "#fafafa", "fg": "#1c1c1c", "field_bg": "#ffffff", "muted": "#6b6b6b", "select_bg": "#005fb8",
+            "border": "#e5e5e5", "hover": "#e9e9e9"},
+    True: {"bg": "#1c1c1c", "fg": "#fafafa", "field_bg": "#262626", "muted": "#9d9d9d", "select_bg": "#57c8ff",
+           "border": "#3a3a3a", "hover": "#2d2d2d"},
+}
 dark_colors = {"bg": "#1e1e1e", "fg": "#e6e6e6", "field_bg": "#2b2b2b", "button_bg": "#3c3c3c",
                "button_active": "#4a4a4a", "select_bg": "#3d6fb4", "select_fg": "#ffffff", "muted": "#9a9a9a",
                "border": "#555555"}
@@ -537,8 +553,13 @@ class ScrapifyApp:
         self._theme_canvases = []
         self._native_theme = ttk.Style(root).theme_use()
 
-        notebook = ttk.Notebook(root)
-        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        # no title bar: the logo and window buttons sit in the tab row, like the browsers do it.
+        # the windows one stays when asked for, or if hiding it doesn't work
+        self.chrome = None
+        if titlebar.on_windows and sv_ttk is not None and not self.settings.get("native_title_bar"):
+            self.chrome = titlebar.Chrome(root)
+        self.notebook = notebook = ttk.Notebook(root)
+        notebook.pack(fill="both", expand=True, padx=8, pady=(0 if self.chrome else 8, 8))
         # clicking a tab focuses the notebook and draws a focus ring; nothing needs it focused
         notebook.bind("<<NotebookTabChanged>>",
                       lambda e: root.focus_set() if root.focus_get() is notebook else None, add="+")
@@ -552,6 +573,12 @@ class ScrapifyApp:
         self._build_automation_tab()
         self._build_settings_tab()
         self._apply_theme(self.settings.get("dark_mode", False))
+        if self.chrome:
+            if self.chrome.install():
+                self._build_chrome()
+            else:
+                self.chrome = None
+                notebook.pack_configure(pady=8)
 
         handler = QueueLogHandler(self.log_queue)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -579,6 +606,39 @@ class ScrapifyApp:
             self.root.after(3000, self._tick_update_check)
 
     # ---------------------------------------------------------------- helpers
+
+    def _build_chrome(self):
+        chrome, notebook = self.chrome, self.notebook
+        self.root.update_idletasks()
+        tab_row = max(self.setup_tab.winfo_y(), chrome.px(titlebar.button_height))
+        self._tab_row = tab_row
+        icon = self._title_icon()
+        if icon is not None:
+            logo = chrome.logo(self.root, icon)
+            logo.place(in_=notebook, x=chrome.px(4), y=(tab_row - icon.height()) // 2)
+            logo.lift()
+        buttons = chrome.caption_buttons(self.root)
+        buttons.place(relx=1.0, x=0, y=0, anchor="ne")
+        buttons.lift()
+        # the empty bit of the tab row, and the window's margin beside it, move the window
+        def empty_tab_row(event):
+            return event.widget is notebook and event.y < tab_row and notebook.identify(event.x, event.y) == ""
+        def root_margin(event):
+            return event.widget is self.root and event.y < tab_row
+        chrome.drag_area(notebook, empty_tab_row)
+        chrome.drag_area(self.root, root_margin)
+        self._apply_theme(self.settings.get("dark_mode", False))  # the tab margin and the new pieces' colors
+
+    def _title_icon(self):
+        # the smallest icon frame that's still crisp at 16px, shrunk to about that
+        frames = getattr(self, "_icons", None)
+        if not frames:
+            return None
+        want = 16 * self.root.winfo_fpixels("1i") / 96
+        frame = min((f for f in frames if f.width() >= want), key=lambda f: f.width(), default=frames[-1])
+        factor = max(1, round(frame.width() / want))
+        self._title_icon_image = frame.subsample(factor) if factor > 1 else frame
+        return self._title_icon_image
 
     @staticmethod
     def _mtime(path):
@@ -675,7 +735,8 @@ class ScrapifyApp:
         menu = ttk.Combobox(box, textvariable=self.browser_var, state="readonly", width=16,
                             values=[bsc.browser_names[k] for k in bsc.browser_order])
         menu.grid(row=3, column=1, sticky="w", **pad)
-        self.get_sessions_btn = ttk.Button(box, text="Get Sessions", command=self._get_sessions_clicked)
+        self.get_sessions_btn = ttk.Button(box, text="Get Sessions", command=self._get_sessions_clicked,
+                                           style=accent_button)
         self.get_sessions_btn.grid(row=3, column=2, **pad)
         ttk.Label(box, text="You only need Get Sessions the first time, or when a sync fails with a login error.",
                   style="Muted.TLabel", wraplength=460, justify="left").grid(row=5, column=0, columnspan=3,
@@ -751,6 +812,7 @@ class ScrapifyApp:
         dialog = tk.Toplevel(self.root)
         dialog.title("Playlist pair")
         dialog.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
+        self._dark_title_bar(dialog)
         dialog.transient(self.root)
         dialog.grab_set()
         fields = {"name": tk.StringVar(value=initial.get("name", "")),
@@ -792,7 +854,7 @@ class ScrapifyApp:
         buttons = ttk.Frame(dialog)
         buttons.grid(row=4, column=0, columnspan=2, pady=8)
         ttk.Button(buttons, text="Cancel", command=dialog.destroy).pack(side="left", padx=6)
-        ttk.Button(buttons, text="OK", command=on_ok).pack(side="left")
+        ttk.Button(buttons, text="OK", command=on_ok, style=accent_button).pack(side="left")
         dialog.bind("<Return>", lambda e: on_ok())
         dialog.wait_window()
         return result or None
@@ -846,6 +908,7 @@ class ScrapifyApp:
         win = tk.Toplevel(self.root)
         win.title(f"Exclude Songs: {pair['name']}")
         win.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
+        self._dark_title_bar(win)
         win.transient(self.root)
         win.geometry("760x500")
         win.grab_set()
@@ -871,7 +934,7 @@ class ScrapifyApp:
             self._save_config()
             win.destroy()
 
-        ttk.Button(win, text="Done", command=finish).pack(pady=(0, 8))
+        ttk.Button(win, text="Done", command=finish, style=accent_button).pack(pady=(0, 8))
         win.protocol("WM_DELETE_WINDOW", finish)
 
     def _refresh_pair_songs(self, platform, url, panel):
@@ -1048,7 +1111,7 @@ class ScrapifyApp:
         top.pack(fill="x", padx=8, pady=8)
         self.sync_buttons = []
         for direction in sync_main.directions:
-            button = ttk.Button(top, text=f"Sync {sync_main.direction_label(direction)}",
+            button = ttk.Button(top, text=f"Sync {sync_main.direction_label(direction)}", style=accent_button,
                                 command=lambda d=direction: self._sync_clicked(d))
             button.pack(side="left", padx=(0, 6))
             self.sync_buttons.append(button)
@@ -1386,7 +1449,13 @@ class ScrapifyApp:
         box = self._section(frame, "Appearance")
         self.dark_mode_var = tk.BooleanVar(value=self.settings.get("dark_mode", False))
         ttk.Checkbutton(box, text="Dark mode", variable=self.dark_mode_var,
-                        command=self._on_dark_mode_changed).pack(anchor="w", padx=8, pady=8)
+                        command=self._on_dark_mode_changed).pack(anchor="w", padx=8, pady=(8, 2))
+        self.native_title_bar_var = tk.BooleanVar(value=self.settings.get("native_title_bar", False))
+        check = ttk.Checkbutton(box, text="Use the Windows title bar" + ("" if sysutil.on_windows else " (Windows only)"),
+                                variable=self.native_title_bar_var, command=self._on_native_title_bar_changed)
+        check.pack(anchor="w", padx=8, pady=(2, 8))
+        if not sysutil.on_windows or sv_ttk is None:
+            check.state(["disabled"])
 
         box = self._section(frame, "Closing the window",
                             "Keeps Scrapify and its automatic syncing running in the tray when you close the window."
@@ -1593,8 +1662,8 @@ class ScrapifyApp:
         dialog.title(title)
         dialog.transient(self.root)
         dialog.resizable(False, False)
-        if self.settings.get("dark_mode"):
-            dialog.configure(background=dark_colors["bg"])
+        dialog.configure(background=self._colors["bg"])
+        self._dark_title_bar(dialog)
         if getattr(self, "_icons", None):
             try:
                 dialog.iconphoto(False, *self._icons)
@@ -1623,9 +1692,8 @@ class ScrapifyApp:
         text.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         text.pack(side="left", fill="both", expand=True)
-        if self.settings.get("dark_mode"):
-            p = dark_colors
-            text.configure(background=p["field_bg"], foreground=p["fg"], insertbackground=p["fg"])
+        p = self._colors
+        text.configure(background=p["field_bg"], foreground=p["fg"], insertbackground=p["fg"])
         text.tag_configure("heading", font=("Segoe UI", 11, "bold"), spacing1=6, spacing3=4)
         text.tag_configure("bullet", lmargin1=4, lmargin2=20, spacing3=2)
         lines = (notes or "").strip().splitlines() or ["No notes for this version."]
@@ -1920,8 +1988,16 @@ class ScrapifyApp:
 
     def _on_dark_mode_changed(self):
         self._save_setting("dark_mode", self.dark_mode_var.get())
-        # applied at startup only: switching themes live leaves bits of the old one behind
+        if sv_ttk is not None:
+            self._apply_theme(self.dark_mode_var.get())  # sun valley switches cleanly live
+            return
+        # the fallback theme is applied at startup only: switching themes live leaves bits of the old one behind
         if messagebox.askyesno(app_name, "Restart Scrapify now for the new appearance?"):
+            self._restart_app()
+
+    def _on_native_title_bar_changed(self):
+        self._save_setting("native_title_bar", self.native_title_bar_var.get())
+        if messagebox.askyesno(app_name, "Restart Scrapify now to switch title bars?"):
             self._restart_app()
 
     def _restart_app(self):
@@ -1937,7 +2013,54 @@ class ScrapifyApp:
         self._shutdown()
 
     def _apply_theme(self, dark):
+        if sv_ttk is not None:
+            self._apply_sv_theme(dark)
+        else:
+            self._apply_fallback_theme(dark)
+
+    def _apply_sv_theme(self, dark):
+        sv_ttk.set_theme("dark" if dark else "light", self.root)
+        p = self._colors = sv_colors[dark]
         style = ttk.Style(self.root)
+        self.root.configure(bg=p["bg"])
+        style.configure("Muted.TLabel", foreground=p["muted"])
+        style.configure("Treeview", rowheight=28)
+        style.configure("TLabelframe.Label", font=("Segoe UI Variable Text", 10, "bold"))
+        self.log_text.configure(bg=p["field_bg"], fg=p["fg"], insertbackground=p["fg"], relief="flat",
+                                borderwidth=0, highlightthickness=1, padx=8, pady=6,
+                                highlightbackground=p["border"],
+                                highlightcolor=p["select_bg"], selectbackground=p["select_bg"],
+                                font=("Cascadia Mono", 9) if "Cascadia Mono" in tkfont.families(self.root) else ("Consolas", 9))
+        for canvas in self._theme_canvases:
+            canvas.configure(bg=p["bg"])
+        if self.chrome and self.chrome.hwnd:
+            self.chrome.set_colors(bg=p["bg"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
+            # room for the logo left of the first tab (per theme, so again after every switch)
+            style.configure("TNotebook", tabmargins=[self.chrome.px(30), 0, 0, 0])
+        self._dark_title_bar(self.root, redraw=True)
+
+    def _dark_title_bar(self, window, redraw=False):
+        # windows draws the title bar itself, ask dwm for the dark one to match
+        dark = bool(self.settings.get("dark_mode"))
+        if not (sysutil.on_windows and sv_ttk is not None) or (not dark and not redraw):
+            return
+        try:
+            import ctypes
+            window.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            value = ctypes.c_int(1 if dark else 0)
+            for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE, and its pre 20H1 number
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), 4) == 0:
+                    break
+            if redraw:
+                # windows only repaints the title bar on a frame change
+                ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020)
+        except Exception:
+            pass
+
+    def _apply_fallback_theme(self, dark):
+        style = ttk.Style(self.root)
+        self._colors = dark_colors if dark else {"bg": "SystemButtonFace", "fg": "SystemWindowText", "field_bg": "SystemWindow"}
         if not dark:
             # the native theme untouched; root and canvases keep tk's default so translucency tools work
             style.theme_use(self._native_theme)
