@@ -29,6 +29,8 @@ Either way, everything it needs comes with it, including its own copy of Chromiu
 
 **Scrapify isn't signed.** Windows SmartScreen will warn about an unknown app the first time you run the installer or the exe: click More info > Run anyway. Some antivirus programs may also flag it. Unsigned apps packed with PyInstaller get flagged often, and Scrapify reads your browser's saved logins when you use Get Sessions, which antivirus heuristics can mistake for something worse. If you'd rather not trust it, run it from source instead (below).
 
+**Using Windhawk?** Mods that restyle every window, like Translucent Windows, can make Scrapify see-through and draw a second set of window buttons over its own. Scrapify notices and tells you how to exclude it in Windhawk, or you can switch to the standard Windows title bar in Settings.
+
 After that, Scrapify checks for a new version each time it opens and asks before updating itself. It shows what changed once it restarts. Most updates are small, since Chromium is only downloaded again when it changes. On the Settings tab you can turn the check off, check by hand, or let it install updates without asking.
 
 ## Setup

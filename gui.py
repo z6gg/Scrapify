@@ -38,6 +38,7 @@ except ImportError as e:
 from main import load_config, save_config
 import titlebar
 import updater
+import windhawk
 from version import version
 
 try:
@@ -613,6 +614,7 @@ class ScrapifyApp:
         self._restart_dialog = None
         if sysutil.frozen:
             self.root.after(300, self._after_update)
+            self.root.after(2000, self._check_windhawk)
             self.root.after(3000, self._tick_update_check)
 
     # ---------------------------------------------------------------- helpers
@@ -2035,6 +2037,60 @@ class ScrapifyApp:
         ttk.Label(dialog, text=f"Here's what changed since {old_version}." if old_version else "Here's what changed.",
                   ).pack(anchor="w", padx=16, pady=(0, 8))
         self._notes_box(dialog, notes, height=12).pack(fill="both", expand=True, padx=16)
+        self._show_dialog(dialog)
+
+    # ---------------------------------------------------------------- windhawk
+
+    def _check_windhawk(self):
+        # windhawk mods that restyle every window make scrapify look broken; say so once
+        try:
+            mods = windhawk.mods_affecting()
+        except Exception:
+            return
+        seen = "|".join(sorted(mods))
+        if not mods or self.settings.get("windhawk_warning_dismissed") == seen:
+            return
+        self._show_windhawk_warning(mods, seen)
+
+    def _show_windhawk_warning(self, mods, seen):
+        exe = os.path.basename(sys.executable)
+        names = " and ".join(f"“{m}”" for m in mods)
+        dialog = self._dialog("Windhawk is restyling Scrapify")
+        dont_show = tk.BooleanVar(value=False)
+
+        def close():
+            if dont_show.get():
+                self._save_setting("windhawk_warning_dismissed", seen)
+            dialog.destroy()
+
+        def use_windows_title_bar():
+            self._save_setting("native_title_bar", True)
+            if hasattr(self, "native_title_bar_var"):
+                self.native_title_bar_var.set(True)
+            close()
+            self._restart_app()
+
+        specs = [("OK", close, True)]
+        if self.chrome is not None:
+            specs.insert(0, ("Use Windows Title Bar", use_windows_title_bar, False))
+        self._buttons(dialog, *specs)
+        dialog.bind("<Escape>", lambda e: close())
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        ttk.Label(dialog, text="Windhawk is changing how Scrapify looks",
+                  font=("Segoe UI", 13, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
+        mod_word = "mods are" if len(mods) > 1 else "mod is"
+        ttk.Label(dialog, text=f"Windhawk's {names} {mod_word} applied to Scrapify. Mods like these can make its "
+                               "background see-through and draw a second set of window buttons over Scrapify's own, "
+                               "so it can look broken. Nothing is wrong with Scrapify itself.",
+                  wraplength=470, justify="left").pack(anchor="w", padx=16)
+        ttk.Label(dialog, text="To fix it", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+        steps = (f"1.  Open Windhawk and click Details on {names}.\n"
+                 f"2.  On the Advanced tab, add {exe} to the custom process exclusion list, then save.\n"
+                 "3.  Restart Scrapify.")
+        if self.chrome is not None:
+            steps += "\n\nOr keep the mod and switch to the standard Windows title bar instead."
+        ttk.Label(dialog, text=steps, wraplength=470, justify="left").pack(anchor="w", padx=16)
+        ttk.Checkbutton(dialog, text="Don't show this again", variable=dont_show).pack(anchor="w", padx=16, pady=(12, 0))
         self._show_dialog(dialog)
 
     def _on_dark_mode_changed(self):
