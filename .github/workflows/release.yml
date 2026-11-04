@@ -24,9 +24,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -48,7 +48,7 @@ jobs:
 
       - name: Cache Chromium
         if: steps.ver.outputs.skip != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: build/browsers
           key: chromium-${{ hashFiles('requirements.txt') }}
