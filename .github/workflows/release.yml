@@ -100,7 +100,10 @@ jobs:
           # this version's section of CHANGELOG.md, from its "## x.y.z" heading to the next one
           awk -v v="$VERSION" '$0 == "## " v {found=1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
           if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
-          gh release create "v$VERSION" "$setup" "$zip" "$update_zip" dist/update.json \
+          # the release page shows these labels; the files keep their names, which old installers
+          # (Scrapify-<version>-windows.zip) and the README link (Scrapify-Setup.exe) depend on
+          gh release create "v$VERSION" "$setup#Scrapify-Setup-windows.exe" \
+            "$zip#Scrapify-$VERSION-windows-portable.zip" "$update_zip" dist/update.json \
             --target "$GITHUB_SHA" \
             --title "Scrapify $VERSION" \
             "${notes[@]}" \

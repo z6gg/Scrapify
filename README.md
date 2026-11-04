@@ -19,11 +19,11 @@ Pick a playlist on each side and Scrapify makes one match the other, adding and 
 
 ## Install
 
-Download [Scrapify-Setup.exe](https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe) and run it. It's small because it fetches the newest version from GitHub while it installs, so any copy of it always installs the latest Scrapify. Running it again on a PC that already has Scrapify replaces the old version with the latest one, and keeps your settings and logins.
+Download [Scrapify-Setup.exe](https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe) (listed as `Scrapify-Setup-windows.exe` on the release page) and run it. It's small because it fetches the newest version from GitHub while it installs, so any copy of it always installs the latest Scrapify. Running it again on a PC that already has Scrapify replaces the old version with the latest one, and keeps your settings and logins.
 
 It installs just for you, with no admin needed, into `%LOCALAPPDATA%\Programs\Scrapify`. It adds Scrapify to the Start menu (and to the desktop if you tick the box), and lists it in Settings > Apps.
 
-**Or the portable way:** download `Scrapify-<version>-windows.zip`, unzip it anywhere and open `Scrapify.exe`. Keep the folder together; the exe needs the files next to it. Skip the `-update.zip`: that one is only for the app's own updater and has no Chromium.
+**Or the portable way:** download `Scrapify-<version>-windows-portable.zip` from the release page (it saves as `Scrapify-<version>-windows.zip`), unzip it anywhere and open `Scrapify.exe`. Keep the folder together; the exe needs the files next to it. Skip the `-update.zip`: that one is only for the app's own updater and has no Chromium.
 
 Either way, everything it needs comes with it, including its own copy of Chromium. The installer needs an internet connection while it runs; the zip doesn't.
 
