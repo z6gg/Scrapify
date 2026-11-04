@@ -10,6 +10,11 @@ import tkinter as tk
 from ctypes import wintypes
 from tkinter import font as tkfont
 
+try:
+    from PIL import Image, ImageDraw, ImageTk  # smooth rounded corners, tk's canvas draws them jagged
+except ImportError:
+    Image = None
+
 on_windows = sys.platform == "win32"
 
 WM_NCCALCSIZE = 0x0083
@@ -20,7 +25,17 @@ SWP_FRAMECHANGED = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020  # nosize nomove n
 
 # segoe fluent icons on 11, segoe mdl2 assets on 10, same code points
 glyphs = {"minimize": "", "maximize": "", "restore": "", "close": ""}
-button_width, button_height = 46, 32  # windows 11's own caption buttons, at 100%
+# at 100%: each button's cell, and the rounded frame that fades in behind it on hover
+button_width, button_height = 38, 30
+pill_width, pill_height, pill_radius = 32, 28, 6
+fade_steps, fade_ms = 4, 18
+close_red = "#c42b1c"
+
+
+def _mix(a, b, t):
+    """The color t of the way from hex a to hex b."""
+    a, b = [tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in (a, b)]
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 if on_windows:
     LRESULT = ctypes.c_ssize_t
@@ -74,25 +89,27 @@ class Chrome:
     # ------------------------------------------------------------- pieces
 
     def caption_buttons(self, parent):
-        """Minimize, maximize and close, flush to whatever corner they're placed in."""
+        """Minimize, maximize and close; a rounded frame fades in behind each on hover."""
         frame = tk.Frame(parent, bd=0, highlightthickness=0)
         self._painted.append(frame)
+        w, h = self.px(button_width), self.px(button_height)
         for name, command in (("minimize", self._minimize), ("maximize", self._toggle_maximize),
                               ("close", self._close)):
-            box = tk.Frame(frame, width=self.px(button_width), height=self.px(button_height), bd=0, highlightthickness=0)
-            box.pack(side="left")
-            box.pack_propagate(False)
-            button = tk.Label(box, text=glyphs[name], font=(self.icon_font, 8), bd=0)
-            button.pack(fill="both", expand=True)
-            button.bind("<Enter>", lambda e, n=name: self._hover(n, True))
-            button.bind("<Leave>", lambda e, n=name: self._hover(n, False))
-            button.bind("<ButtonRelease-1>", lambda e, c=command, b=button: c() if self._inside(e, b) else None)
-            self.buttons[name] = button
-            self._painted.append(box)
+            canvas = tk.Canvas(frame, width=w, height=h, bd=0, highlightthickness=0)
+            canvas.pack(side="left")
+            canvas.create_image(w // 2, h // 2, tags="pill", state="hidden")
+            canvas.create_text(w // 2, h // 2, text=glyphs[name], font=(self.icon_font, 8), tags="glyph")
+            canvas.step = 0  # how far the hover frame has faded in, 0 to fade_steps
+            canvas.target = 0
+            canvas.fading = False
+            canvas.bind("<Enter>", lambda e, n=name: self._hover(n, True))
+            canvas.bind("<Leave>", lambda e, n=name: self._hover(n, False))
+            canvas.bind("<ButtonRelease-1>", lambda e, c=command, b=canvas: c() if self._inside(e, b) else None)
+            self.buttons[name] = canvas
         return frame
 
     def logo(self, parent, image):
-        label = tk.Label(parent, image=image, bd=0)
+        label = tk.Label(parent, image=image, bd=0, padx=0, pady=0, highlightthickness=0)
         self._painted.append(label)
         self.drag_area(label)
         return label
@@ -119,17 +136,48 @@ class Chrome:
 
     def set_colors(self, bg, fg, muted, hover_bg):
         self.colors = {"bg": bg, "fg": fg, "muted": muted, "hover": hover_bg}
+        # every fade step drawn once up front, so hovering just swaps images
+        self._pills = {kind: [self._pill(_mix(bg, color, i / fade_steps), bg) for i in range(fade_steps + 1)]
+                       for kind, color in (("normal", hover_bg), ("close", close_red))}
         self._paint()
+
+    def _pill(self, color, bg):
+        if Image is None:
+            return None
+        w, h, big = self.px(pill_width), self.px(pill_height), 4  # drawn 4x then shrunk, that's the antialiasing
+        image = Image.new("RGB", (w * big, h * big), bg)
+        ImageDraw.Draw(image).rounded_rectangle((0, 0, w * big - 1, h * big - 1),
+                                                radius=self.px(pill_radius) * big, fill=color)
+        return ImageTk.PhotoImage(image.resize((w, h), Image.LANCZOS), master=self.root)
 
     def _paint(self):
         if not self.colors:
             return
-        p = self.colors
         for widget in self._painted:
-            widget.configure(bg=p["bg"])
-        fg = p["fg"] if self._is_active() else p["muted"]
-        for button in self.buttons.values():
-            button.configure(bg=p["bg"], fg=fg)
+            widget.configure(bg=self.colors["bg"])
+        for name, canvas in self.buttons.items():
+            canvas.configure(bg=self.colors["bg"])
+            self._draw_button(name)
+
+    def _draw_button(self, name):
+        canvas, p = self.buttons[name], self.colors
+        step, kind = canvas.step, "close" if name == "close" else "normal"
+        canvas.delete("flat")
+        if step == 0:
+            canvas.itemconfigure("pill", state="hidden")
+        elif self._pills[kind][step] is not None:
+            canvas.itemconfigure("pill", image=self._pills[kind][step], state="normal")
+        else:  # no pillow: a plain rectangle
+            w, h = canvas.winfo_reqwidth(), canvas.winfo_reqheight()
+            pw, ph = self.px(pill_width), self.px(pill_height)
+            color = _mix(p["bg"], close_red if kind == "close" else p["hover"], step / fade_steps)
+            canvas.create_rectangle((w - pw) // 2, (h - ph) // 2, (w + pw) // 2, (h + ph) // 2,
+                                    outline="", fill=color, tags="flat")
+            canvas.tag_lower("flat")
+        fg = p["fg"] if self._is_active() or step else p["muted"]
+        if kind == "close":
+            fg = _mix(fg, "#ffffff", step / fade_steps)
+        canvas.itemconfigure("glyph", fill=fg)
 
     def _is_active(self):
         try:
@@ -139,13 +187,20 @@ class Chrome:
             return True
 
     def _hover(self, name, inside):
-        if not self.colors:
+        canvas = self.buttons[name]
+        canvas.target = fade_steps if inside else 0
+        if self.colors and not canvas.fading:
+            self._fade(name)
+
+    def _fade(self, name):
+        canvas = self.buttons[name]
+        if canvas.step == canvas.target:
+            canvas.fading = False
             return
-        if inside:
-            bg, fg = ("#c42b1c", "#ffffff") if name == "close" else (self.colors["hover"], self.colors["fg"])
-        else:
-            bg, fg = self.colors["bg"], self.colors["fg"] if self._is_active() else self.colors["muted"]
-        self.buttons[name].configure(bg=bg, fg=fg)
+        canvas.fading = True
+        canvas.step += 1 if canvas.target > canvas.step else -1
+        self._draw_button(name)
+        canvas.after(fade_ms, self._fade, name)
 
     @staticmethod
     def _inside(event, widget):
@@ -176,8 +231,9 @@ class Chrome:
         if (event is not None and event.widget is not self.root) or "maximize" not in self.buttons:
             return
         glyph = glyphs["restore" if self.maximized() else "maximize"]
-        if self.buttons["maximize"].cget("text") != glyph:
-            self.buttons["maximize"].configure(text=glyph)
+        canvas = self.buttons["maximize"]
+        if canvas.itemcget("glyph", "text") != glyph:
+            canvas.itemconfigure("glyph", text=glyph)
 
     def _on_top_edge(self, event):
         # the top few pixels resize, the way the windows caption's top edge does

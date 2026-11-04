@@ -87,12 +87,17 @@ default_settings = {
 }
 update_check_interval_ms = 12 * 60 * 60 * 1000  # while scrapify stays open in the tray
 muted_gray = "#606060"
+# the icon in the tab row (24 is a size icon.ico has drawn by hand) and the space either side of it, at 100%
+logo_size, logo_gap = 24, 12
+sv_tab_inset = 3  # sun valley's tab images start with 3 columns in the row's own grey
 # tk (not ttk) widgets don't follow the ttk theme, these match sun valley
 sv_colors = {
     False: {"bg": "#fafafa", "fg": "#1c1c1c", "field_bg": "#ffffff", "muted": "#6b6b6b", "select_bg": "#005fb8",
-            "border": "#e5e5e5", "hover": "#e9e9e9"},
+            "border": "#e5e5e5", "hover": "#d4d4d4",
+            "chrome": "#e7e7e7"},
     True: {"bg": "#1c1c1c", "fg": "#fafafa", "field_bg": "#262626", "muted": "#9d9d9d", "select_bg": "#57c8ff",
-           "border": "#3a3a3a", "hover": "#2d2d2d"},
+           "border": "#3a3a3a", "hover": "#454545",
+           "chrome": "#2f2f2f"},
 }
 dark_colors = {"bg": "#1e1e1e", "fg": "#e6e6e6", "field_bg": "#2b2b2b", "button_bg": "#3c3c3c",
                "button_active": "#4a4a4a", "select_bg": "#3d6fb4", "select_fg": "#ffffff", "muted": "#9a9a9a",
@@ -554,12 +559,16 @@ class ScrapifyApp:
         self._native_theme = ttk.Style(root).theme_use()
 
         # no title bar: the logo and window buttons sit in the tab row, like the browsers do it.
-        # the windows one stays when asked for, or if hiding it doesn't work
+        # built app only: source runs are python.exe, which tools like translucency mods restyle
+        # (and draw their own caption buttons over ours). the windows one also stays when asked
+        # for, or if hiding it doesn't work
         self.chrome = None
-        if titlebar.on_windows and sv_ttk is not None and not self.settings.get("native_title_bar"):
+        if (titlebar.on_windows and sysutil.frozen and sv_ttk is not None
+                and not self.settings.get("native_title_bar")):
             self.chrome = titlebar.Chrome(root)
         self.notebook = notebook = ttk.Notebook(root)
-        notebook.pack(fill="both", expand=True, padx=8, pady=(0 if self.chrome else 8, 8))
+        # with our own title bar, 1px under windows' top border keeps the tab row an even 42 tall
+        notebook.pack(fill="both", expand=True, padx=8, pady=(1 if self.chrome else 8, 8))
         # clicking a tab focuses the notebook and draws a focus ring; nothing needs it focused
         notebook.bind("<<NotebookTabChanged>>",
                       lambda e: root.focus_set() if root.focus_get() is notebook else None, add="+")
@@ -579,6 +588,7 @@ class ScrapifyApp:
             else:
                 self.chrome = None
                 notebook.pack_configure(pady=8)
+                self._apply_theme(self.settings.get("dark_mode", False))  # back to the plain colors
 
         handler = QueueLogHandler(self.log_queue)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -609,35 +619,75 @@ class ScrapifyApp:
 
     def _build_chrome(self):
         chrome, notebook = self.chrome, self.notebook
-        self.root.update_idletasks()
-        tab_row = max(self.setup_tab.winfo_y(), chrome.px(titlebar.button_height))
-        self._tab_row = tab_row
+        self._tab_row = chrome.px(40)  # until the window is shown and it can be measured
         icon = self._title_icon()
-        if icon is not None:
-            logo = chrome.logo(self.root, icon)
-            logo.place(in_=notebook, x=chrome.px(4), y=(tab_row - icon.height()) // 2)
-            logo.lift()
-        buttons = chrome.caption_buttons(self.root)
-        buttons.place(relx=1.0, x=0, y=0, anchor="ne")
-        buttons.lift()
+        self._logo = chrome.logo(self.root, icon) if icon is not None else None
+        self._caption_buttons = chrome.caption_buttons(self.root)
+        # positions come from the real layout, which only exists once the window is on screen
+        notebook.bind("<Configure>", lambda e: self._layout_chrome(), add="+")
         # the empty bit of the tab row, and the window's margin beside it, move the window
         def empty_tab_row(event):
-            return event.widget is notebook and event.y < tab_row and notebook.identify(event.x, event.y) == ""
+            return (event.widget is notebook and event.y < self._tab_row
+                    and str(self.root.tk.call(notebook._w, "identify", "tab", event.x, event.y)) == "")
         def root_margin(event):
-            return event.widget is self.root and event.y < tab_row
+            return event.widget is self.root and event.y < self._tab_row
         chrome.drag_area(notebook, empty_tab_row)
         chrome.drag_area(self.root, root_margin)
         self._apply_theme(self.settings.get("dark_mode", False))  # the tab margin and the new pieces' colors
 
+    def _layout_chrome(self):
+        chrome, notebook = self.chrome, self.notebook
+        page = notebook.nametowidget(notebook.select()) if notebook.select() else self.setup_tab
+        tab_row = page.winfo_y()  # where the pages start: the bottom of the tab row
+        if tab_row <= 1 or notebook.winfo_width() <= 1:
+            return  # not laid out yet
+        size, gap = chrome.px(logo_size), chrome.px(logo_gap)
+        # measured, not guessed: where the first tab starts now, so the margin can put it exactly
+        # one gap past the logo, the logo then sits dead center between it and the window's edge
+        probe_y = max(1, tab_row - chrome.px(6))
+        first_tab = next((x for x in range(notebook.winfo_width())
+                          if str(self.root.tk.call(notebook._w, "identify", "tab", x, probe_y)) != ""), None)
+        if first_tab is not None:
+            margin_now = self._tab_margin_applied
+            visible = notebook.winfo_x() + first_tab + sv_tab_inset
+            wanted = max(0, margin_now + (2 * gap + size) - visible)
+            if wanted != margin_now:
+                self._tab_margin = self._tab_margin_applied = wanted
+                ttk.Style(self.root).configure("TNotebook", tabmargins=[wanted, 0, 0, 0])
+        # the visible row: under windows' 1px top border, down to where the pages start
+        row_top, row_bottom = 1, notebook.winfo_y() + tab_row
+        height = row_bottom - row_top
+        self._tab_row = row_bottom
+        if self._logo is not None:
+            self._logo.place(x=gap, y=row_top + (height - self._logo.winfo_reqheight()) // 2)
+            self._logo.lift()
+        # the close button's rounded frame ends one gap from the window's edge, like the logo starts
+        inset = max(0, gap - chrome.px(titlebar.button_width - titlebar.pill_width) // 2)
+        buttons_height = chrome.px(titlebar.button_height)
+        self._caption_buttons.place(relx=1.0, x=-inset, y=row_top + (height - buttons_height) // 2, anchor="ne")
+        self._caption_buttons.lift()
+
     def _title_icon(self):
-        # the smallest icon frame that's still crisp at 16px, shrunk to about that
-        frames = getattr(self, "_icons", None)
-        if not frames:
-            return None
-        want = 16 * self.root.winfo_fpixels("1i") / 96
-        frame = min((f for f in frames if f.width() >= want), key=lambda f: f.width(), default=frames[-1])
-        factor = max(1, round(frame.width() / want))
-        self._title_icon_image = frame.subsample(factor) if factor > 1 else frame
+        # the icon's own hand drawn frame when it has one this size, else its biggest one shrunk to
+        # size. the whole square either way, never cropped: the artwork is centered in it already
+        size = self.chrome.px(logo_size)
+        try:
+            from PIL import Image, ImageTk
+            with Image.open(icon_path) as ico:
+                sizes = ico.info.get("sizes") or {ico.size}
+                ico.size = (size, size) if (size, size) in sizes else max(sizes)
+                image = ico.convert("RGBA")
+            if image.size != (size, size):
+                # premultiplied, or the see through edges pick up a dark fringe while shrinking
+                image = image.convert("RGBa").resize((size, size), Image.LANCZOS).convert("RGBA")
+            self._title_icon_image = ImageTk.PhotoImage(image, master=self.root)
+        except Exception:
+            frames = getattr(self, "_icons", None)
+            if not frames:
+                return None
+            frame = min((f for f in frames if f.width() >= size), key=lambda f: f.width(), default=frames[-1])
+            factor = max(1, frame.width() // size)
+            self._title_icon_image = frame.subsample(factor) if factor > 1 else frame
         return self._title_icon_image
 
     @staticmethod
@@ -1451,10 +1501,11 @@ class ScrapifyApp:
         ttk.Checkbutton(box, text="Dark mode", variable=self.dark_mode_var,
                         command=self._on_dark_mode_changed).pack(anchor="w", padx=8, pady=(8, 2))
         self.native_title_bar_var = tk.BooleanVar(value=self.settings.get("native_title_bar", False))
-        check = ttk.Checkbutton(box, text="Use the Windows title bar" + ("" if sysutil.on_windows else " (Windows only)"),
+        note = "" if sysutil.frozen else " (built app only)"
+        check = ttk.Checkbutton(box, text="Use the Windows title bar" + (note if sysutil.on_windows else " (Windows only)"),
                                 variable=self.native_title_bar_var, command=self._on_native_title_bar_changed)
         check.pack(anchor="w", padx=8, pady=(2, 8))
-        if not sysutil.on_windows or sv_ttk is None:
+        if not sysutil.on_windows or not sysutil.frozen or sv_ttk is None:
             check.state(["disabled"])
 
         box = self._section(frame, "Closing the window",
@@ -2022,7 +2073,9 @@ class ScrapifyApp:
         sv_ttk.set_theme("dark" if dark else "light", self.root)
         p = self._colors = sv_colors[dark]
         style = ttk.Style(self.root)
-        self.root.configure(bg=p["bg"])
+        chrome = self.chrome is not None
+        # with our own title bar the window is the tab strip's grey around the tab pages, like a browser
+        self.root.configure(bg=p["chrome"] if chrome else p["bg"])
         style.configure("Muted.TLabel", foreground=p["muted"])
         style.configure("Treeview", rowheight=28)
         style.configure("TLabelframe.Label", font=("Segoe UI Variable Text", 10, "bold"))
@@ -2033,11 +2086,38 @@ class ScrapifyApp:
                                 font=("Cascadia Mono", 9) if "Cascadia Mono" in tkfont.families(self.root) else ("Consolas", 9))
         for canvas in self._theme_canvases:
             canvas.configure(bg=p["bg"])
-        if self.chrome and self.chrome.hwnd:
-            self.chrome.set_colors(bg=p["bg"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
+        if chrome:
+            self.chrome.set_colors(bg=p["chrome"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
             # room for the logo left of the first tab (per theme, so again after every switch)
-            style.configure("TNotebook", tabmargins=[self.chrome.px(30), 0, 0, 0])
+            margin = getattr(self, "_tab_margin", self.chrome.px(logo_size + logo_gap))
+            self._tab_margin_applied = margin
+            style.configure("TNotebook", tabmargins=[margin, 0, 0, 0])
+            self._seamless_notebook_border(dark)
+        else:
+            style.configure("TNotebook", tabmargins=[0, 0, 0, 0])
+            style.layout("TNotebook", [("Notebook.border", {"sticky": "nsew", "children": [("TNotebook.Tab", {"expand": 1})]})])
         self._dark_title_bar(self.root, redraw=True)
+
+    def _seamless_notebook_border(self, dark):
+        # sun valley's notebook frame is a rounded grey card with the page color baked into its
+        # corners and antialiased curve, which shows as specks on our grey window. the window is
+        # that same grey now, so the card is drawn as plain grey: no corners left to show
+        style = ttk.Style(self.root)
+        name = "Seamless.Notebook.border"
+        try:
+            if name not in style.element_names():
+                from PIL import Image, ImageTk
+                sheet = os.path.join(os.path.dirname(sv_ttk.__file__), "theme",
+                                     f"spritesheet_{'dark' if dark else 'light'}.png")
+                with Image.open(sheet) as image:
+                    border = image.convert("RGBA").crop((50, 0, 90, 40))  # notebook-border in sprites_*.tcl
+                border = Image.new("RGBA", border.size, border.getpixel((20, 20)))
+                images = self.__dict__.setdefault("_border_images", {})
+                images[dark] = ImageTk.PhotoImage(border, master=self.root)
+                style.element_create(name, "image", images[dark], border=5, padding=5)
+            style.layout("TNotebook", [(name, {"sticky": "nsew", "children": [("TNotebook.Tab", {"expand": 1})]})])
+        except Exception:
+            pass  # the stock frame, specks and all
 
     def _dark_title_bar(self, window, redraw=False):
         # windows draws the title bar itself, ask dwm for the dark one to match
