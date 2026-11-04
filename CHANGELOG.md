@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+- Right-click a playlist pair to edit it, exclude songs, remove it or add a new one, the same as the buttons under the list
+- The tabs sit centered between the logo and the window buttons, and the selected one is a rounded box around its name
+- Everything in the top row lines up: logo, tabs and window buttons
+- Pages have rounded corners, and spacing is even across every tab
+- The add, update, what's new and Exclude Songs windows, and the pop-up messages, get the same title bar and look as the main window
+- The tray icon's menu follows dark and light mode
+- If a Windhawk mod is restyling Scrapify's windows, Scrapify explains the odd look once and shows how to exclude it, or switches to the Windows title bar for you
+
 ## 1.2.0
 
 - New installer, Scrapify-Setup.exe: installs for just you with no admin, adds Scrapify to the Start menu (and the desktop if you like) and to Settings > Apps. It always downloads the newest version, and running it again replaces the old version with a clean copy
