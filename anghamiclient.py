@@ -447,7 +447,8 @@ class AnghamiClient(bsc.BrowserClient):
         try:
             playlist_id = self._open_api(playlist_url)
             already = {t["id"] for t in self._read_playlist_api(playlist_id)}
-            hits = find_many(tracks, self.search_many, threshold, exact_version, self.log, "Anghami", self.artist_songs_many)
+            hits = find_many(tracks, self.search_many, threshold, exact_version, self.log, "Anghami",
+                             self.artist_songs_many, rounds=2)
             found = [(t, hit) for t, hit in zip(tracks, hits) if hit]
             failed = [t for t, hit in zip(tracks, hits) if not hit]
             new_ids = list(dict.fromkeys(hit["id"] for _t, hit in found if hit["id"] not in already))

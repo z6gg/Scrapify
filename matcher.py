@@ -154,7 +154,7 @@ def match_score(a, b, versions=True):
     artist_score = _names_score(_names(a, "artist"), _names(b, "artist"),
                                 lambda x, y: _artist_pair_score(x, y, arabic_song))
     if title_score < _same_length_title_score and artist_score >= 87 and _same_length(a, b) \
-            and _title_overlap(a, b):
+            and (_title_overlap(a, b) or _thin_title_match(a, b)):
         title_score = _same_length_title_score
     elif title_score >= 87 and _far_apart(a, b) and not _same_title(a, b):
         title_score = 80  # one title only contains the other and they run far apart ("Habibi" / "Bes Ellak Habibi")
@@ -227,6 +227,24 @@ def _title_overlap(a, b):
                     substantial = max(short.values(), default=0) >= 3 or (len(short) >= 2 and sum(short.values()) >= 3)
                     if substantial and set(short) <= set(long_):
                         return True
+    return False
+
+
+def _thin_title_match(a, b):
+    # "El Layaly" and "Ellayali" are mostly vowels, both skeletons come out as one or two l's.
+    # too thin for consonants, so compare the plain spelling, but only at the same length to the second
+    gap = duration_gap(a, b)
+    if gap is None or gap > 1.5:
+        return False
+    for x in _names(a, "title"):
+        for y in _names(b, "title"):
+            if not x or not y or has_arabic(x) != has_arabic(y):
+                continue
+            nx = normalize(_overlap_text(x)).replace(" ", "")
+            ny = normalize(_overlap_text(y)).replace(" ", "")
+            thin = min(len(skeleton(x).replace(" ", "")), len(skeleton(y).replace(" ", ""))) < 4
+            if thin and min(len(nx), len(ny)) >= 4 and fuzz.ratio(nx, ny) >= 80:
+                return True
     return False
 
 
@@ -411,8 +429,24 @@ class _NeedsLookup(Exception):
 
 
 def find_many(tracks, search_many, threshold=87, exact_version=False, log=None, service="",
-              artist_songs_many=None):
-    """find_in_catalog for many songs with the lookups batched, picking exactly what one by one would"""
+              artist_songs_many=None, rounds=1):
+    """find_in_catalog for many songs with the lookups batched, picking exactly what one by one would.
+    rounds > 1 searches again from scratch for whatever is still unmatched (anghami's results vary
+    from call to call); only the last round logs misses"""
+    results, pending = [None] * len(tracks), list(range(len(tracks)))
+    for r in range(rounds):
+        last = r == rounds - 1
+        found = _find_many_once([tracks[i] for i in pending], search_many, threshold, exact_version,
+                                log if last else None, service, artist_songs_many)
+        for i, hit in zip(pending, found):
+            results[i] = hit
+        pending = [i for i in pending if results[i] is None]
+        if not pending:
+            break
+    return results
+
+
+def _find_many_once(tracks, search_many, threshold, exact_version, log, service, artist_songs_many):
     # each round every unresolved song runs against what's fetched so far and raises at the first
     # lookup it lacks. those get fetched together and the round repeats
     searched, artists = {}, {}
