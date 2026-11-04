@@ -608,6 +608,7 @@ class ScrapifyApp:
                 self.chrome = None
                 notebook.pack_configure(pady=8)
                 self._apply_theme(self.settings.get("dark_mode", False))  # back to the plain colors
+        self._fit_window()
 
         handler = QueueLogHandler(self.log_queue)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -709,13 +710,15 @@ class ScrapifyApp:
         # the close button's rounded frame ends one gap from the window's edge, like the logo starts
         self._caption_buttons.place(relx=1.0, x=-inset, y=top_for(chrome.px(titlebar.button_height)), anchor="ne")
         self._caption_buttons.lift()
-        if not getattr(self, "_fitted", False):
-            # once: the rounded pages take a few pixels, grow the window if the setup tab's buttons
-            # would be cut off at its starting size
-            self._fitted = True
-            short = self.root.winfo_reqheight() - self.root.winfo_height()
-            if short > 0 and self.root.state() == "normal":
-                self.root.geometry(f"{self.root.winfo_width()}x{self.root.winfo_height() + short}")
+
+    def _fit_window(self):
+        # taller than the starting size when the setup tab needs it, so its buttons aren't cut off.
+        # with either title bar: tk's geometry is the client area once ours replaces windows' own
+        self.root.update_idletasks()
+        width, height = (int(v) for v in self.root.geometry().split("+")[0].split("x"))
+        need = self.root.winfo_reqheight()
+        if need > height:
+            self.root.geometry(f"{width}x{need}")
 
     def _title_icon(self):
         # the icon's own hand drawn frame when it has one this size, else its biggest one shrunk to
@@ -923,14 +926,13 @@ class ScrapifyApp:
         self.pairs_tree.bind("<Double-1>", lambda e: self._edit_pair_dialog())
 
         buttons = ttk.Frame(pairs_box)
-        # centered under the list: the frame is only as wide as the buttons, and pack puts it in the middle
-        buttons.pack(padx=8, pady=(0, section_gap_bottom))
-        # the same height as every other button (these had 2px extra inside). a gap only between them:
-        # one after the last too would push the centered group off the middle
+        buttons.pack(fill="x", padx=8, pady=(0, section_gap_bottom))
+        # the same height as every other button (these had 2px extra inside), a gap between them
         actions = (("Add", self._add_pair_dialog), ("Edit", self._edit_pair_dialog),
                    ("Remove", self._remove_selected_pair), ("Exclude Songs", self._exclude_songs_dialog))
         for i, (text, command) in enumerate(actions):
             ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0 if i == 0 else gap_controls, 0))
+        self._build_pairs_menu()
         self._reload_pairs_tree()
 
     def _save_setting(self, key, value):
@@ -1012,6 +1014,45 @@ class ScrapifyApp:
         dialog_root.bind("<Escape>", lambda e: dialog_root.destroy())
         dialog_root.wait_window()
         return result or None
+
+    def _build_pairs_menu(self):
+        # right click on a pair: what the buttons under the list do, for that pair. a native menu, so
+        # it follows the dark or light theme like the tray's (sysutil.set_menu_theme)
+        menu = self._pairs_menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Edit...", command=self._edit_pair_dialog)
+        menu.add_command(label="Exclude Songs...", command=self._exclude_songs_dialog)
+        menu.add_command(label="Remove", command=self._remove_selected_pair)
+        menu.add_separator()
+        menu.add_command(label="Add a Pair...", command=self._add_pair_dialog)
+        self._pair_menu_items = ("Edit...", "Exclude Songs...", "Remove")
+
+        def show(event):
+            row = self.pairs_tree.identify_row(event.y)
+            if row:
+                # the pair under the mouse becomes the selected one, which is what the actions use
+                self.pairs_tree.selection_set(row)
+                self.pairs_tree.focus(row)
+            for label in self._pair_menu_items:
+                menu.entryconfigure(label, state="normal" if row else "disabled")
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        self.pairs_tree.bind("<Button-3>", show)
+        # the menu key and shift+F10 open it for the selected pair, like elsewhere in windows
+        def from_keyboard(event):
+            selection = self.pairs_tree.selection()
+            if selection:
+                x0, y0, w, h = self.pairs_tree.bbox(selection[0]) or (0, 0, 0, 0)
+                event.x_root = self.pairs_tree.winfo_rootx() + x0 + 20
+                event.y_root = self.pairs_tree.winfo_rooty() + y0 + h
+                event.y = y0 + h // 2
+            else:
+                event.x_root, event.y_root, event.y = self.pairs_tree.winfo_rootx() + 20, self.pairs_tree.winfo_rooty() + 30, -1
+            show(event)
+            return "break"
+        self.pairs_tree.bind("<App>", from_keyboard)
+        self.pairs_tree.bind("<Shift-F10>", from_keyboard)
 
     def _add_pair_dialog(self):
         pair = self._pair_dialog()
