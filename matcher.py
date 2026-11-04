@@ -34,6 +34,9 @@ _arabic_consonants = {
 }
 # spoken readings franco follows: qaf dropped ("Ana Wel Amar" = انا والقمر), tha/thal/zha as s/d/d
 _arabic_consonants_soft = {**_arabic_consonants, "ق": "", "ث": "s", "ذ": "d", "ظ": "d"}
+# gulf songs say qaf as g ("Galo Tara" = قالوا ترى)
+_arabic_consonants_gulf = {**_arabic_consonants, "ق": "J"}
+_arabic_readings = (False, True, "gulf")
 _digraphs = (("kh", "K"), ("sh", "S"), ("ch", "S"), ("gh", "J"), ("th", "t"), ("dh", "d"), ("ph", "f"))
 _latin_consonants = {
     "b": "b", "p": "b", "t": "t", "d": "d", "z": "z", "s": "s", "c": "k", "k": "k", "q": "k",
@@ -62,7 +65,8 @@ def skeleton(text, soft=False):
     text = unicodedata.normalize("NFKD", (text or "").lower())
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub("['’ʼ`´]", "", text)  # "Ta'abt" is one word
-    arabic_map = _arabic_consonants_soft if soft else _arabic_consonants
+    arabic_map = (_arabic_consonants_gulf if soft == "gulf" else
+                  _arabic_consonants_soft if soft else _arabic_consonants)
     words = []
     for word in re.findall(r"\w+", text):
         franco = bool(re.search(r"[a-z]", word))
@@ -217,15 +221,15 @@ def _title_overlap(a, b):
             if not x or not y:
                 continue
             sx, sy = _overlap_text(x), _overlap_text(y)
-            for soft_x in ((False, True) if has_arabic(sx) else (False,)):
-                for soft_y in ((False, True) if has_arabic(sy) else (False,)):
+            for soft_x in (_arabic_readings if has_arabic(sx) else (False,)):
+                for soft_y in (_arabic_readings if has_arabic(sy) else (False,)):
                     wx, wy = _skeleton_words(sx, soft_x), _skeleton_words(sy, soft_y)
                     wx = {k: n for k, n in wx.items() if k not in own} or wx
                     wy = {k: n for k, n in wy.items() if k not in own} or wy
                     short, long_ = (wx, wy) if sum(wx.values()) <= sum(wy.values()) else (wy, wx)
                     # "Hawina Hawina" is only {"hn"}, which half of all titles contain
                     substantial = max(short.values(), default=0) >= 3 or (len(short) >= 2 and sum(short.values()) >= 3)
-                    if substantial and set(short) <= set(long_):
+                    if substantial and _words_within(short, long_):
                         return True
     return False
 
@@ -234,23 +238,64 @@ def _close_spelling_match(a, b):
     # same artist, same length to the second, and nearly the same letters: "Akhedni Maak" and
     # "Akendni Maak" (0.3s apart) cut down to different consonants, "El Layaly" and "Ellayali" to
     # almost none. thin titles get a looser bar, "Wala Ala Balo" vs "Balak" (87) must stay apart.
-    # latin spellings only: in arabic one letter is another word (باله / بالك)
+    # latin spellings only: in arabic one letter is another word (باله / بالك). thin titles within
+    # a second may also agree on their vowel shape, in any script ("Eyoon Alail" / "Oyoun Al Liel")
     gap = duration_gap(a, b)
     if gap is None or gap > 1.5:
         return False
     for x in _names(a, "title"):
         for y in _names(b, "title"):
-            if not x or not y or has_arabic(x) or has_arabic(y):
+            if not x or not y:
+                continue
+            thin = min(len(skeleton(x).replace(" ", "")), len(skeleton(y).replace(" ", ""))) < 4
+            if thin and gap <= 1.0:
+                shape = _vowel_shape(_overlap_text(x))
+                if len(shape) >= 5 and shape == _vowel_shape(_overlap_text(y)):
+                    return True
+            if has_arabic(x) or has_arabic(y):
                 continue
             nx = normalize(_overlap_text(x)).replace(" ", "")
             ny = normalize(_overlap_text(y)).replace(" ", "")
             if min(len(nx), len(ny)) < 4:
                 continue
             ratio = fuzz.ratio(nx, ny)
-            thin = min(len(skeleton(x).replace(" ", "")), len(skeleton(y).replace(" ", ""))) < 4
             if (thin and ratio >= 80) or (gap <= 1.0 and min(len(nx), len(ny)) >= 6 and ratio >= 90):
                 return True
     return False
+
+
+def _words_within(short, long_):
+    # every short word is in the long title. a long word may differ by a letter, franco writes a
+    # dropped qaf as 2 or leaves it out where the gulf says g ("Bnftere2" / "Bneftreg" = بنفترق)
+    return all(w in long_ or (len(w) >= 5 and any(len(v) >= 5 and fuzz.ratio(w, v) >= 90 for v in long_))
+               for w in short)
+
+
+_shape_vowels = set("aeiouyw23") | set("اويىعءؤئةأإآ")
+
+
+@lru_cache(maxsize=65536)
+def _vowel_shape(text):
+    # consonants with every vowel run as one V, in either script: "Eyoon Alail", "Oyoun Al Liel" and
+    # "عيون الليل" all give VnVlVl. for titles too thin for skeletons
+    text = unicodedata.normalize("NFKD", (text or "").lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^\w]", "", text)
+    for pair, symbol in _digraphs:
+        text = text.replace(pair, symbol)
+    out = []
+    for ch in text:
+        if ch in _shape_vowels:
+            out.append("V")
+        elif ch in _arabic_consonants:
+            out.append(_arabic_consonants[ch])
+        elif ch in _latin_consonants:
+            out.append(_latin_consonants[ch])
+        elif ch in "KSJ":
+            out.append(ch)
+        elif ch.isdigit():
+            out.append(_franco_digits.get(ch, ch))
+    return "".join(c for i, c in enumerate(out) if i == 0 or c != out[i - 1])
 
 
 def _overlap_text(title):
@@ -277,8 +322,8 @@ def _cross_script(x, y, arabic_song=False):
 
 
 def _skeleton_ratio(x, y):
-    xs = {skeleton(x), skeleton(x, True)} if has_arabic(x) else {skeleton(x)}
-    ys = {skeleton(y), skeleton(y, True)} if has_arabic(y) else {skeleton(y)}
+    xs = {skeleton(x, r) for r in _arabic_readings} if has_arabic(x) else {skeleton(x)}
+    ys = {skeleton(y, r) for r in _arabic_readings} if has_arabic(y) else {skeleton(y)}
     return max(_one_skeleton_ratio(x, y, a.replace(" ", ""), b.replace(" ", "")) for a in xs for b in ys)
 
 
