@@ -2,8 +2,6 @@
 
 Sync your playlists from Spotify to Anghami or vice versa **without Spotify Premium** via your own logins.
 
-**Windows only.**
-
 ## Features
 
 - One way sync in either direction, for as many playlist pairs as you want
