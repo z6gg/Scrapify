@@ -7,7 +7,7 @@ Sync your playlists from Spotify to Anghami or vice versa **without Spotify Prem
 ## Features
 
 - One way sync in either direction, for as many playlist pairs as you want
-- Matches the same song across Arabic, Franco (`3met 3en`) and English names, and tells versions apart (live, remix, slowed)
+- Matches the same song across Arabic, Franco (`3met 3en`) and English names (Arabic/Franco is not 100% accurate)
 - Creates the other playlist on the first sync if you leave its link empty
 - Exclude songs you never want touched
 - Sync on a timer, or in the background with the app closed; pauses while a game or fullscreen app runs
