@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2
+
+- Arabic songs match far more reliably between Spotify and Anghami: spellings that barely share letters ("El Layaly" and "Ellayali"), Gulf spellings ("Galo Tara" for قالوا ترى), and titles one side shortened
+- A song with no artist no longer stops a whole sync from adding anything to Spotify
+- Songs Anghami's search misses at first get searched again before they're reported as missing
+
 ## 1.3.1
 
 - Notes and hints show in grey again, instead of the same color as the main text
