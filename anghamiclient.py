@@ -360,9 +360,12 @@ class AnghamiClient(bsc.BrowserClient):
                                               "simple_results": "true"}, path=_search_path))
 
     def search_many(self, queries):
+        out = {q: [] for q in queries if not q.strip()}
+        queries = [q for q in queries if q.strip()]
         datas = self._gateway_many([({"query": q, "page": "0", "filter_type": "top", "simple_results": "true"},
                                      _search_path) for q in queries])
-        return {q: self._song_hits(d) for q, d in zip(queries, datas)}
+        out.update({q: self._song_hits(d) for q, d in zip(queries, datas)})
+        return out
 
     def artist_songs_many(self, artists):
         """{artist credit: songs of every credited artist}"""

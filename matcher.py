@@ -154,7 +154,7 @@ def match_score(a, b, versions=True):
     artist_score = _names_score(_names(a, "artist"), _names(b, "artist"),
                                 lambda x, y: _artist_pair_score(x, y, arabic_song))
     if title_score < _same_length_title_score and artist_score >= 87 and _same_length(a, b) \
-            and (_title_overlap(a, b) or _thin_title_match(a, b)):
+            and (_title_overlap(a, b) or _close_spelling_match(a, b)):
         title_score = _same_length_title_score
     elif title_score >= 87 and _far_apart(a, b) and not _same_title(a, b):
         title_score = 80  # one title only contains the other and they run far apart ("Habibi" / "Bes Ellak Habibi")
@@ -230,20 +230,25 @@ def _title_overlap(a, b):
     return False
 
 
-def _thin_title_match(a, b):
-    # "El Layaly" and "Ellayali" are mostly vowels, both skeletons come out as one or two l's.
-    # too thin for consonants, so compare the plain spelling, but only at the same length to the second
+def _close_spelling_match(a, b):
+    # same artist, same length to the second, and nearly the same letters: "Akhedni Maak" and
+    # "Akendni Maak" (0.3s apart) cut down to different consonants, "El Layaly" and "Ellayali" to
+    # almost none. thin titles get a looser bar, "Wala Ala Balo" vs "Balak" (87) must stay apart.
+    # latin spellings only: in arabic one letter is another word (باله / بالك)
     gap = duration_gap(a, b)
     if gap is None or gap > 1.5:
         return False
     for x in _names(a, "title"):
         for y in _names(b, "title"):
-            if not x or not y or has_arabic(x) != has_arabic(y):
+            if not x or not y or has_arabic(x) or has_arabic(y):
                 continue
             nx = normalize(_overlap_text(x)).replace(" ", "")
             ny = normalize(_overlap_text(y)).replace(" ", "")
+            if min(len(nx), len(ny)) < 4:
+                continue
+            ratio = fuzz.ratio(nx, ny)
             thin = min(len(skeleton(x).replace(" ", "")), len(skeleton(y).replace(" ", ""))) < 4
-            if thin and min(len(nx), len(ny)) >= 4 and fuzz.ratio(nx, ny) >= 80:
+            if (thin and ratio >= 80) or (gap <= 1.0 and min(len(nx), len(ny)) >= 6 and ratio >= 90):
                 return True
     return False
 
@@ -404,7 +409,7 @@ def find_in_catalog(search, title, artist, threshold=87, exact_version=False, lo
         best_score = max(best_score, score)
         if hit is not None and same_version and good_length(target, hit):
             return hit
-    if artist_songs:
+    if artist_songs and artist.strip():  # a song with no artist has no artist page to read
         seen += artist_songs(artist)
         hit, score, same_version = pick_best(target, seen, threshold, exact_version)
         best_score = max(best_score, score)

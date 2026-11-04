@@ -384,20 +384,26 @@ class SpotifyScraper(bsc.BrowserClient):
         return body
 
     def _api_search_candidates(self, query):
+        if not query.strip():
+            return []
         self._ensure_search_template(query)
         return self._search_hits(self._api_post(self._search_body(query)))
 
     def search_many(self, queries):
-        # every search failing means the saved request shape is stale: learn it again, retry once
+        # every search failing means the saved request shape is stale: learn it again, retry once.
+        # blank queries never go out, spotify rejects them, which read as a stale request
+        out = {q: [] for q in queries if not q.strip()}
+        queries = [q for q in queries if q.strip()]
         if not queries:
-            return {}
+            return out
         self._ensure_search_template(queries[0])
         results = self._api_post_many([self._search_body(q) for q in queries])
         if all(r is None for r in results):
             self.log.info("Spotify: the saved search request was rejected, learning it again.")
             self._capture_search_template(queries[0])
             results = self._api_post_many([self._search_body(q) for q in queries])
-        return {q: self._search_hits(r) for q, r in zip(queries, results)}
+        out.update({q: self._search_hits(r) for q, r in zip(queries, results)})
+        return out
 
     @staticmethod
     def _search_hits(result):
