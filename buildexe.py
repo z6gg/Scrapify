@@ -48,6 +48,7 @@ subprocess.run([sys.executable, "-m", "PyInstaller", "--onedir", "--windowed", "
                 "--name", "Scrapify", "--distpath", os.path.dirname(app_dir),
                 "--workpath", os.path.join(build_dir, "pyinstaller"), "--specpath", build_dir,
                 "--version-file", version_info, "--icon", icon, "--add-data", f"{icon}{os.pathsep}.",
+                "--collect-data", "sv_ttk",  # its tcl theme files
                 "--exclude-module", "numpy",  # pillow and rapidfuzz pull it in, nothing here uses it
                 "gui.py"], check=True)
 
@@ -74,4 +75,27 @@ with zipfile.ZipFile(update_zip, "w", zipfile.ZIP_DEFLATED) as z:
 with open(os.path.join(here, "dist", "update.json"), "w", encoding="utf-8") as f:
     json.dump({"version": version, "chromium": sorted(os.listdir(os.path.join(app_dir, "browsers")))}, f)
 
-print(f"\nDone: {app_dir}\nRelease zip: {zip_path}\nUpdate zip: {update_zip}")
+
+# the installer, when Inno Setup 6 is around. --installer makes it a must (the release build)
+def find_iscc():
+    candidates = [os.environ.get("ISCC"), shutil.which("iscc")]
+    for base in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles"),
+                 os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+        if base:
+            candidates.append(os.path.join(base, "Inno Setup 6", "ISCC.exe"))
+    return next((c for c in candidates if c and os.path.isfile(c)), None)
+
+
+setup_path = os.path.join(here, "dist", f"Scrapify-{version}-setup.exe")
+iscc = find_iscc()
+if iscc:
+    print("\nMaking the installer...")
+    subprocess.run([iscc, "/Q", f"/DAppVersion={version}", os.path.join(here, "installer.iss")], check=True)
+elif "--installer" in sys.argv:
+    sys.exit("Inno Setup 6 isn't installed, so there's no installer. Get it from jrsoftware.org/isdl.php")
+else:
+    setup_path = None
+    print("\nSkipping the installer: Inno Setup 6 isn't installed (jrsoftware.org/isdl.php).")
+
+print(f"\nDone: {app_dir}\nRelease zip: {zip_path}\nUpdate zip: {update_zip}"
+      + (f"\nInstaller: {setup_path}" if setup_path else ""))

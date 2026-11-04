@@ -19,12 +19,13 @@ Pick a playlist on each side and Scrapify makes one match the other, adding and 
 
 ## Install
 
-1. Download `Scrapify-<version>-windows.zip` from the [latest release](https://github.com/z6gg/Scrapify/releases/latest). Not the `-update.zip`, that one is only for the app's own updater and has no Chromium.
-2. Unzip it anywhere and open `Scrapify.exe`. Keep the folder together; the exe needs the files next to it.
+Download `Scrapify-<version>-setup.exe` from the [latest release](https://github.com/z6gg/Scrapify/releases/latest) and run it. It installs just for you, with no admin needed, into `%LOCALAPPDATA%\Programs\Scrapify`. It adds Scrapify to the Start menu (and to the desktop if you tick the box), and lists it in Settings > Apps.
 
-Everything it needs is in that folder, including its own copy of Chromium. No admin needed.
+**Or the portable way:** download `Scrapify-<version>-windows.zip`, unzip it anywhere and open `Scrapify.exe`. Keep the folder together; the exe needs the files next to it. Skip the `-update.zip`: that one is only for the app's own updater and has no Chromium.
 
-**The exe isn't signed.** Windows SmartScreen will warn about an unknown app the first time: click More info > Run anyway. Some antivirus programs may also flag it. Unsigned apps packed with PyInstaller get flagged often, and Scrapify reads your browser's saved logins when you use Get Sessions, which antivirus heuristics can mistake for something worse. If you'd rather not trust the exe, run it from source instead (below).
+Either way, everything it needs comes with it, including its own copy of Chromium.
+
+**Scrapify isn't signed.** Windows SmartScreen will warn about an unknown app the first time you run the installer or the exe: click More info > Run anyway. Some antivirus programs may also flag it. Unsigned apps packed with PyInstaller get flagged often, and Scrapify reads your browser's saved logins when you use Get Sessions, which antivirus heuristics can mistake for something worse. If you'd rather not trust it, run it from source instead (below).
 
 After that, Scrapify checks for a new version each time it opens and asks before updating itself. It shows what changed once it restarts. Most updates are small, since Chromium is only downloaded again when it changes. On the Settings tab you can turn the check off, check by hand, or let it install updates without asking.
 
@@ -50,6 +51,10 @@ Settings, logins and the log live in `%LOCALAPPDATA%\Scrapify`, not in the app f
 `spotify_session.json` and `anghami_session.json` in there are your logins. Don't share them.
 
 ## Uninstall
+
+**Installed:** uninstall Scrapify from Settings > Apps. It closes Scrapify and removes the start-with-Windows and background sync entries. At the end it asks whether to delete your settings and logins too.
+
+**Portable:**
 
 1. On the **Automation** tab, remove the background sync and turn off **Start with Windows** if you used them. Both add an entry that starts Scrapify when you log on.
 2. Close Scrapify, including from the tray, and delete its folder.
@@ -83,9 +88,9 @@ A copy run from source doesn't update itself. Pull the latest code instead.
 python buildexe.py
 ```
 
-Builds `dist/Scrapify/` with Chromium inside (downloaded once, then reused) and zips it as `dist/Scrapify-<version>-windows.zip`, plus a smaller `Scrapify-<version>-update.zip` without Chromium for the in-app updater. The version comes from `version.py`, and changes are listed in `CHANGELOG.md`.
+Builds `dist/Scrapify/` with Chromium inside (downloaded once, then reused) and zips it as `dist/Scrapify-<version>-windows.zip`, plus a smaller `Scrapify-<version>-update.zip` without Chromium for the in-app updater. With [Inno Setup 6](https://jrsoftware.org/isdl.php) installed, it also builds the installer, `Scrapify-<version>-setup.exe`, from `installer.iss`. The version comes from `version.py`, and changes are listed in `CHANGELOG.md`.
 
-To release, bump `version.py`, add that version's section to `CHANGELOG.md` and push. GitHub Actions builds both zips and publishes the release, with that CHANGELOG section as its notes, which is also what the app shows after updating.
+To release, bump `version.py`, add that version's section to `CHANGELOG.md` and push. GitHub Actions builds the installer and both zips and publishes the release, with that CHANGELOG section as its notes, which is also what the app shows after updating.
 
 ## Disclaimer
 

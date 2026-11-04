@@ -30,6 +30,9 @@ whats_new_file = "whats_new.json"
 update_log = "update.log"
 staging_name = ".update"
 exe_name = "Scrapify.exe"
+# where the installer (installer.iss, its AppId) registers scrapify in settings > apps
+installer_uninstall_key = (r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+                           r"\{6F1C3E8A-5B2D-4E7F-9A31-2C8D4B7E0F15}_is1")
 
 
 @dataclass
@@ -277,6 +280,13 @@ try {
         Move-Item -LiteralPath $item.FullName -Destination $target
     }
     Log "updated to __VERSION__"
+    # an installed copy: the version in settings > apps follows along
+    try {
+        $entry = Get-ItemProperty -LiteralPath __UNINSTALL_KEY__ -ErrorAction Stop
+        if ($entry.InstallLocation -and ($entry.InstallLocation.TrimEnd('\') -ieq $app.TrimEnd('\'))) {
+            Set-ItemProperty -LiteralPath __UNINSTALL_KEY__ -Name DisplayVersion -Value '__VERSION__'
+        }
+    } catch {}
 } catch {
     $ok = $false
     Log "update to __VERSION__ failed, putting the old version back: $_"
@@ -313,6 +323,7 @@ def apply(new_app, update, wait_pids, restart_background=None, relaunch=True):
                        ("__DATA__", _ps(sysutil.data_dir())),
                        ("__PIDS__", ",".join(str(int(p)) for p in wait_pids) or ""),
                        ("__RELAUNCH__", "$true" if relaunch else "$false"),
+                       ("__UNINSTALL_KEY__", _ps(installer_uninstall_key)),
                        ("__VERSION__", update.version), ("__EXE__", exe_name)):
         script = script.replace(key, value)
     # outside the staging folder so the script can delete that folder when it's done

@@ -3,7 +3,9 @@
 # To release: bump the version in version.py, add its section to CHANGELOG.md, commit and push.
 # The release is tagged v<version> and its notes come from that version's CHANGELOG.md section.
 # Pushing without touching version.py builds nothing. If a release for that version already
-# exists, the run stops without building. It can also be started by hand from the Actions tab.
+# exists, the run stops without building. It can also be started by hand from the Actions tab;
+# with "Publish a release" unticked it only builds and keeps the files on the run for a week,
+# for trying a build before releasing it.
 
 name: Build and release
 
@@ -12,6 +14,11 @@ on:
     branches: [main]
     paths: [version.py]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish a release (untick to only build and keep the files on the run)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -39,7 +46,9 @@ jobs:
         run: |
           version=$(python -c "from version import version; print(version)")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          if gh release view "v$version" >/dev/null 2>&1; then
+          if [ "${{ inputs.publish }}" = "false" ]; then
+            echo "Test build of $version, nothing gets published"
+          elif gh release view "v$version" >/dev/null 2>&1; then
             echo "Release v$version already exists, bump version.py to make a new one."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -53,12 +62,32 @@ jobs:
           path: build/browsers
           key: chromium-${{ hashFiles('requirements.txt') }}
 
+      - name: Install Inno Setup
+        if: steps.ver.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "Inno Setup didn't install" }
+
       - name: Build
         if: steps.ver.outputs.skip != 'true'
-        run: python buildexe.py
+        run: python buildexe.py --installer
+
+      - name: Keep the test build
+        if: steps.ver.outputs.skip != 'true' && github.event_name == 'workflow_dispatch' && !inputs.publish
+        uses: actions/upload-artifact@v7
+        with:
+          name: Scrapify-${{ steps.ver.outputs.version }}-test
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/update.json
+          retention-days: 7
 
       - name: Publish release
-        if: steps.ver.outputs.skip != 'true'
+        # on a push there are no inputs, and an empty one would count as false
+        if: steps.ver.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,11 +95,12 @@ jobs:
         run: |
           zip="dist/Scrapify-$VERSION-windows.zip"
           update_zip="dist/Scrapify-$VERSION-update.zip"
-          test -f "$zip" && test -f "$update_zip" && test -f dist/update.json
+          setup="dist/Scrapify-$VERSION-setup.exe"
+          test -f "$zip" && test -f "$update_zip" && test -f "$setup" && test -f dist/update.json
           # this version's section of CHANGELOG.md, from its "## x.y.z" heading to the next one
           awk -v v="$VERSION" '$0 == "## " v {found=1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
           if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
-          gh release create "v$VERSION" "$zip" "$update_zip" dist/update.json \
+          gh release create "v$VERSION" "$setup" "$zip" "$update_zip" dist/update.json \
             --target "$GITHUB_SHA" \
             --title "Scrapify $VERSION" \
             "${notes[@]}" \
