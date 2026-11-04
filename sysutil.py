@@ -41,6 +41,32 @@ def use_data_dir():
     os.chdir(data_dir())
 
 
+def set_menu_theme(dark):
+    """Native menus (the tray icon's) in dark or light, whatever windows' own setting is.
+
+    Windows has no public switch for this; uxtheme's SetPreferredAppMode (ordinal 135, 1903 and
+    later) is what explorer and most dark mode apps use; RefreshImmersiveColorPolicyState (104)
+    makes windows drop its cached answer, so a switch back takes, and FlushMenuThemes (136) applies
+    it to menus already made. Anything missing (older windows, not windows) leaves menus as they are.
+    """
+    if not on_windows:
+        return
+    try:
+        import ctypes
+        uxtheme = ctypes.WinDLL("uxtheme")
+        set_preferred_app_mode = uxtheme[135]
+        set_preferred_app_mode.argtypes, set_preferred_app_mode.restype = (ctypes.c_int,), ctypes.c_int
+        set_preferred_app_mode(2 if dark else 3)  # force dark, force light
+        refresh_policy = uxtheme[104]
+        refresh_policy.argtypes, refresh_policy.restype = (), None
+        refresh_policy()
+        flush_menu_themes = uxtheme[136]
+        flush_menu_themes.argtypes, flush_menu_themes.restype = (), None
+        flush_menu_themes()
+    except (OSError, AttributeError):
+        pass
+
+
 def no_console_kwargs():
     # stops a console window flashing up from the windowed app
     return {"creationflags": subprocess.CREATE_NO_WINDOW} if on_windows else {}

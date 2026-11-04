@@ -26,8 +26,14 @@ SWP_FRAMECHANGED = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020  # nosize nomove n
 # segoe fluent icons on 11, segoe mdl2 assets on 10, same code points
 glyphs = {"minimize": "", "maximize": "", "restore": "", "close": ""}
 # at 100%: each button's cell, and the rounded frame that fades in behind it on hover
-button_width, button_height = 38, 30
-pill_width, pill_height, pill_radius = 32, 28, 6
+# the hover frame is the same height and radius as the selected tab's rectangle, the button exactly
+# that tall so it can sit on the same rows
+button_width, button_height = 38, 26
+pill_width, pill_height, pill_radius = 32, 26, 6
+# rows to raise each glyph by: tk draws them a little low. 1 puts the ✕ and □ bottom on the tab
+# letters' baseline; the minimize dash, 2 rows thin, is dead center without it
+glyph_lift = {"minimize": 0, "maximize": 1, "close": 1}
+glyph_ink = 11  # how wide the glyphs' visible part is, centered in their cell
 fade_steps, fade_ms = 4, 18
 close_red = "#c42b1c"
 
@@ -100,7 +106,7 @@ class Chrome:
             canvas = tk.Canvas(frame, width=w, height=h, bd=0, highlightthickness=0)
             canvas.pack(side="left")
             canvas.create_image(w // 2, h // 2, tags="pill", state="hidden")
-            canvas.create_text(w // 2, h // 2, text=glyphs[name], font=(self.icon_font, 8), tags="glyph")
+            canvas.create_text(w // 2, h // 2 - self.px(glyph_lift[name]), text=glyphs[name], font=(self.icon_font, 8), tags="glyph")
             canvas.step = 0  # how far the hover frame has faded in, 0 to fade_steps
             canvas.target = 0
             canvas.fading = False

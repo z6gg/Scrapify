@@ -1,4 +1,5 @@
 import json
+import math
 import logging
 import os
 import queue
@@ -90,15 +91,31 @@ update_check_interval_ms = 12 * 60 * 60 * 1000  # while scrapify stays open in t
 muted_gray = "#606060"
 # the icon in the tab row (24 is a size icon.ico has drawn by hand) and the space either side of it, at 100%
 logo_size, logo_gap = 24, 12
-sv_tab_inset = 3  # sun valley's tab images start with 3 columns in the row's own grey
+# the tabs, at 100%: each one a rounded rectangle around its text, this tall, inset this far from
+# the sides of its slot, with this corner radius. it's centered on the letters' body (capital top to
+# baseline), and so are the logo and the window buttons: one line for the whole row
+tab_pill_side, tab_pill_height, tab_pill_radius = 2, 26, 6
+# the text's padding in its slot: puts the letters' body on the row's middle (the label's box has the
+# font's leading above the letters and room for descenders below, so it isn't even)
+tab_text_top, tab_text_bottom = 9, 11
+# spacing inside the sections of every tab, see _even_out
+section_gap_title, section_gap, section_gap_list, section_gap_buttons, section_gap_bottom = 6, 8, 2, 4, 10
+section_spacing = 6  # above and below each section
+check_text_offset = 30  # a sun valley checkbox's text starts this far in from its left edge
+check_box_inset = 4  # and its square this far
+# side by side in a row: a label, its entry and its unit ("Sync every [30] minutes"), then between
+# controls and buttons, then before a status or hint text
+gap_unit, gap_controls, gap_status = 6, 8, 12
+cap_height_ratio = 0.7  # segoe ui's capitals are 0.7 of its size
+page_radius = 8  # the pages' rounded corners, at 100%
 # tk (not ttk) widgets don't follow the ttk theme, these match sun valley
 sv_colors = {
     False: {"bg": "#fafafa", "fg": "#1c1c1c", "field_bg": "#ffffff", "muted": "#6b6b6b", "select_bg": "#005fb8",
             "border": "#e5e5e5", "hover": "#d4d4d4",
-            "chrome": "#e7e7e7"},
+            "chrome": "#e7e7e7", "tab_hover": "#f4f4f4"},
     True: {"bg": "#1c1c1c", "fg": "#fafafa", "field_bg": "#262626", "muted": "#9d9d9d", "select_bg": "#57c8ff",
            "border": "#3a3a3a", "hover": "#454545",
-           "chrome": "#2f2f2f"},
+           "chrome": "#2f2f2f", "tab_hover": "#292929"},
 }
 dark_colors = {"bg": "#1e1e1e", "fg": "#e6e6e6", "field_bg": "#2b2b2b", "button_bg": "#3c3c3c",
                "button_active": "#4a4a4a", "select_bg": "#3d6fb4", "select_fg": "#ffffff", "muted": "#9a9a9a",
@@ -466,7 +483,7 @@ class SongChecklist(ttk.LabelFrame):
         self.refresh_btn = ttk.Button(top, text="Refresh", command=self.on_refresh)
         self.refresh_btn.pack(side="left")
         self.status_var = tk.StringVar(value="Not loaded yet.")
-        ttk.Label(top, textvariable=self.status_var).pack(side="left", padx=8)
+        ttk.Label(top, textvariable=self.status_var).pack(side="left", padx=(gap_status, 0))
 
         box = ttk.Frame(self)
         box.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -645,30 +662,60 @@ class ScrapifyApp:
         if tab_row <= 1 or notebook.winfo_width() <= 1:
             return  # not laid out yet
         size, gap = chrome.px(logo_size), chrome.px(logo_gap)
-        # measured, not guessed: where the first tab starts now, so the margin can put it exactly
-        # one gap past the logo, the logo then sits dead center between it and the window's edge
+        # the tabs sit in the middle of what you see between the logo and the window buttons: the
+        # empty space from the logo's last colored column to the first tab's rounded rectangle is the
+        # same as from the last tab's rectangle to the minimize dash's first. measured from where the
+        # tabs are now, then the left margin moved by the difference
+        inset = max(0, gap - chrome.px(titlebar.button_width - titlebar.pill_width) // 2)
         probe_y = max(1, tab_row - chrome.px(6))
-        first_tab = next((x for x in range(notebook.winfo_width())
-                          if str(self.root.tk.call(notebook._w, "identify", "tab", x, probe_y)) != ""), None)
-        if first_tab is not None:
-            margin_now = self._tab_margin_applied
-            visible = notebook.winfo_x() + first_tab + sv_tab_inset
-            wanted = max(0, margin_now + (2 * gap + size) - visible)
-            if wanted != margin_now:
+        slots = [x for x in range(notebook.winfo_width())
+                 if str(self.root.tk.call(notebook._w, "identify", "tab", x, probe_y)) != ""]
+        first_tab = slots[0] if slots else None
+        if slots:
+            side = chrome.px(tab_pill_side)
+            pill_left = notebook.winfo_x() + slots[0] + side
+            pill_right = notebook.winfo_x() + slots[-1] - side
+            logo_right = gap + getattr(self, "_logo_ink_right", size - 1)
+            buttons_left = self.root.winfo_width() - inset - self._caption_buttons.winfo_reqwidth()
+            cell, ink = chrome.px(titlebar.button_width), chrome.px(titlebar.glyph_ink)
+            dash_left = buttons_left + (cell - ink + 1) // 2
+            space_left, space_right = pill_left - logo_right - 1, dash_left - pill_right - 1
+            wanted = max(0, self._tab_margin_applied + (space_right - space_left) // 2)
+            if wanted != self._tab_margin_applied:
                 self._tab_margin = self._tab_margin_applied = wanted
                 ttk.Style(self.root).configure("TNotebook", tabmargins=[wanted, 0, 0, 0])
-        # the visible row: under windows' 1px top border, down to where the pages start
-        row_top, row_bottom = 1, notebook.winfo_y() + tab_row
-        height = row_bottom - row_top
+        # the tab row ends at the rounded panel the pages sit in
+        row_bottom = notebook.winfo_y() + tab_row - getattr(self, "_page_inset", 0)
         self._tab_row = row_bottom
+        # the line everything sits on: the middle of the tabs' rounded rectangles, which is where
+        # their text is centered too
+        line = None
+        if first_tab is not None:
+            probe_x = first_tab + chrome.px(20)
+            in_tab = [y for y in range(0, tab_row)
+                      if str(self.root.tk.call(notebook._w, "identify", "tab", probe_x, y)) != ""]
+            if in_tab:
+                # the tab's slot is a little taller than the tab drawn in it, which sits in its middle
+                geometry = self._tab_geometry()
+                spare = (len(in_tab) - geometry["height"]) / 2
+                line = notebook.winfo_y() + in_tab[0] + spare + geometry["body"]
+        if line is None:
+            line = row_bottom / 2
+        # pixel rows: something n rows tall is centered on line when its top is line - (n - 1) / 2
+        top_for = lambda n: math.floor(line - (n - 1) / 2 + 0.5)
         if self._logo is not None:
-            self._logo.place(x=gap, y=row_top + (height - self._logo.winfo_reqheight()) // 2)
+            self._logo.place(x=gap, y=top_for(self._logo.winfo_reqheight()))
             self._logo.lift()
         # the close button's rounded frame ends one gap from the window's edge, like the logo starts
-        inset = max(0, gap - chrome.px(titlebar.button_width - titlebar.pill_width) // 2)
-        buttons_height = chrome.px(titlebar.button_height)
-        self._caption_buttons.place(relx=1.0, x=-inset, y=row_top + (height - buttons_height) // 2, anchor="ne")
+        self._caption_buttons.place(relx=1.0, x=-inset, y=top_for(chrome.px(titlebar.button_height)), anchor="ne")
         self._caption_buttons.lift()
+        if not getattr(self, "_fitted", False):
+            # once: the rounded pages take a few pixels, grow the window if the setup tab's buttons
+            # would be cut off at its starting size
+            self._fitted = True
+            short = self.root.winfo_reqheight() - self.root.winfo_height()
+            if short > 0 and self.root.state() == "normal":
+                self.root.geometry(f"{self.root.winfo_width()}x{self.root.winfo_height() + short}")
 
     def _title_icon(self):
         # the icon's own hand drawn frame when it has one this size, else its biggest one shrunk to
@@ -683,6 +730,9 @@ class ScrapifyApp:
             if image.size != (size, size):
                 # premultiplied, or the see through edges pick up a dark fringe while shrinking
                 image = image.convert("RGBa").resize((size, size), Image.LANCZOS).convert("RGBA")
+            ink = image.getchannel("A").getbbox()
+            if ink:
+                self._logo_ink_right = ink[2] - 1  # its last colored column, for centering the tabs
             self._title_icon_image = ImageTk.PhotoImage(image, master=self.root)
         except Exception:
             frames = getattr(self, "_icons", None)
@@ -737,9 +787,46 @@ class ScrapifyApp:
         return frame
 
     @staticmethod
+    def _even_out(frame):
+        """Respaces every section in frame by one rule, so no two sections space things differently.
+
+        6 under the section's title, 8 between different kinds of thing (a description and a row of
+        controls, controls and a checkbox), 2 between stacked checkboxes or radio buttons, 4 between
+        stacked buttons, nothing between a note and the checkbox above it that it explains, 10 under
+        the last one. Sideways padding (indents) is left as it was.
+        """
+        def kind(widget):
+            if isinstance(widget, (ttk.Checkbutton, ttk.Radiobutton)):
+                return "check"
+            if isinstance(widget, ttk.Button):
+                return "button"
+            if isinstance(widget, ttk.Separator):
+                return "line"
+            if isinstance(widget, ttk.Label):
+                return "note" if str(widget.cget("style")) == "Muted.TLabel" else "text"
+            return "row"
+
+        gaps = {("check", "check"): section_gap_list, ("button", "button"): section_gap_buttons,
+                ("check", "note"): 0, ("text", "check"): section_gap_list}
+        for box in frame.pack_slaves():
+            if not isinstance(box, ttk.LabelFrame):
+                continue
+            parts = box.pack_slaves()
+            for i, part in enumerate(parts):
+                above = section_gap_title if i == 0 else gaps.get((kind(parts[i - 1]), kind(part)), section_gap)
+                # a heading like "Startup:" belongs to what follows it, not to what's above. the
+                # section's description at the top is no heading: what follows it gets the full gap
+                if i and kind(part) == "text" and kind(parts[i - 1]) != "text":
+                    above = section_gap
+                if i == 1 and kind(parts[0]) == "text":
+                    above = section_gap
+                below = section_gap_bottom if i == len(parts) - 1 else 0
+                part.pack_configure(pady=(above, below))
+
+    @staticmethod
     def _section(parent, title, text=None):
         box = ttk.LabelFrame(parent, text=title)
-        box.pack(fill="x", padx=8, pady=6)
+        box.pack(fill="x", padx=8, pady=section_spacing)
         if text:
             ttk.Label(box, text=text, wraplength=680, justify="left").pack(anchor="w", padx=8, pady=(6, 0))
         return box
@@ -765,9 +852,9 @@ class ScrapifyApp:
     # -------------------------------------------------------------- setup tab
 
     def _build_setup_tab(self):
-        pad = {"padx": 8, "pady": 4}
+        pad = {"padx": 8, "pady": 2}
         box = ttk.LabelFrame(self.setup_tab, text="Accounts")
-        box.pack(fill="x", **pad)
+        box.pack(fill="x", padx=8, pady=section_spacing)
         box.grid_columnconfigure(1, minsize=260)  # so the Other row doesn't push the buttons sideways
 
         ttk.Label(box, text="Sync Browser (Chromium):").grid(row=0, column=0, sticky="w", **pad)
@@ -807,19 +894,23 @@ class ScrapifyApp:
         )
 
         def show_other(*_):
+            other = self.browser_var.get() == bsc.browser_names["other"]
             for widget, grid in other_widgets:
-                if self.browser_var.get() == bsc.browser_names["other"]:
+                if other:
                     widget.grid(**grid)
                 else:
                     widget.grid_remove()
+            # a hidden row keeps its minimum height, which would leave a gap under the note
+            box.grid_rowconfigure(6, minsize=getattr(self, "_accounts_row_height", 0) if other else 0)
         menu.bind("<<ComboboxSelected>>", show_other)
         show_other()
         self._refresh_session_status()
+        self._accounts_box, self._accounts_menu = box, menu
 
         pairs_box = ttk.LabelFrame(self.setup_tab, text="Playlist pairs")
-        pairs_box.pack(fill="both", expand=True, **pad)
+        pairs_box.pack(fill="both", expand=True, padx=8, pady=section_spacing)
         tree_row = ttk.Frame(pairs_box)
-        tree_row.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        tree_row.pack(fill="both", expand=True, padx=8, pady=(section_gap_title, section_gap))
         self.pairs_tree = ttk.Treeview(tree_row, columns=("name", "spotify", "anghami"), show="headings", height=8)
         for col, label, width in (("name", "Pair Name", 120), ("spotify", "Spotify playlist URL", 260),
                                   ("anghami", "Anghami playlist URL", 260)):
@@ -832,10 +923,14 @@ class ScrapifyApp:
         self.pairs_tree.bind("<Double-1>", lambda e: self._edit_pair_dialog())
 
         buttons = ttk.Frame(pairs_box)
-        buttons.pack(fill="x", padx=8, pady=(0, 8))
-        for text, command in (("Add", self._add_pair_dialog), ("Edit", self._edit_pair_dialog),
-                              ("Remove", self._remove_selected_pair), ("Exclude Songs", self._exclude_songs_dialog)):
-            ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0, 6), ipady=2)
+        # centered under the list: the frame is only as wide as the buttons, and pack puts it in the middle
+        buttons.pack(padx=8, pady=(0, section_gap_bottom))
+        # the same height as every other button (these had 2px extra inside). a gap only between them:
+        # one after the last too would push the centered group off the middle
+        actions = (("Add", self._add_pair_dialog), ("Edit", self._edit_pair_dialog),
+                   ("Remove", self._remove_selected_pair), ("Exclude Songs", self._exclude_songs_dialog))
+        for i, (text, command) in enumerate(actions):
+            ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0 if i == 0 else gap_controls, 0))
         self._reload_pairs_tree()
 
     def _save_setting(self, key, value):
@@ -908,8 +1003,10 @@ class ScrapifyApp:
             dialog_root.destroy()
 
         buttons = ttk.Frame(dialog)
-        buttons.grid(row=4, column=0, columnspan=2, pady=8)
-        ttk.Button(buttons, text="Cancel", command=dialog_root.destroy).pack(side="left", padx=6)
+        # the same 16 under the buttons as at the dialog's sides (8 for the frame, 8 for the grid)
+        buttons.grid(row=4, column=0, columnspan=2, pady=(section_gap, 16))
+        # a gap only between the two, so the pair is centered (6 either side of Cancel pushed it over)
+        ttk.Button(buttons, text="Cancel", command=dialog_root.destroy).pack(side="left", padx=(0, 6))
         ttk.Button(buttons, text="OK", command=on_ok, style=accent_button).pack(side="left")
         dialog_root.bind("<Return>", lambda e: on_ok())
         dialog_root.bind("<Escape>", lambda e: dialog_root.destroy())
@@ -1170,14 +1267,14 @@ class ScrapifyApp:
         for direction in sync_main.directions:
             button = ttk.Button(top, text=f"Sync {sync_main.direction_label(direction)}", style=accent_button,
                                 command=lambda d=direction: self._sync_clicked(d))
-            button.pack(side="left", padx=(0, 6))
+            button.pack(side="left", padx=(0, gap_controls))
             self.sync_buttons.append(button)
         self.manual_pair_select = PairSelectDropdown(top, lambda: self.config["playlist_pairs"],
                                                      lambda names: self._save_pair_selection("manual_pair_names", names))
-        self.manual_pair_select.pack(side="left", padx=(6, 0))
+        self.manual_pair_select.pack(side="left")
         self.manual_pair_select.refresh(selected_names=self.config.get("manual_pair_names"))
         self.sync_status_var = tk.StringVar(value="Idle.")
-        ttk.Label(top, textvariable=self.sync_status_var).pack(side="left", padx=12)
+        ttk.Label(top, textvariable=self.sync_status_var).pack(side="left", padx=(gap_status, 0))
 
         self.log_text = tk.Text(self.sync_tab, height=20, state="disabled", wrap="word")
         self.log_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -1327,7 +1424,7 @@ class ScrapifyApp:
         row.pack(fill="x", padx=8, pady=8)
         self.pause_processes_var = tk.StringVar(value=", ".join(self.config["pause_while_running"]))
         ttk.Entry(row, textvariable=self.pause_processes_var, width=50).pack(side="left")
-        ttk.Button(row, text="Save", command=self._save_pause_processes).pack(side="left", padx=6)
+        ttk.Button(row, text="Save", command=self._save_pause_processes).pack(side="left", padx=(gap_controls, 0))
         self.config_toggles = {"pause_while_fullscreen": tk.BooleanVar(value=self.config["pause_while_fullscreen"])}
         check = ttk.Checkbutton(box, text="Pause while any app is fullscreen" + ("" if sysutil.on_windows else " (Windows only)"),
                                 variable=self.config_toggles["pause_while_fullscreen"],
@@ -1349,12 +1446,12 @@ class ScrapifyApp:
         row = ttk.Frame(box)
         row.pack(fill="x", padx=8, pady=8)
         ttk.Label(row, text="Sync every").pack(side="left")
-        ttk.Entry(row, textvariable=self.interval_var, width=5).pack(side="left", padx=4)
+        ttk.Entry(row, textvariable=self.interval_var, width=5).pack(side="left", padx=gap_unit)
         ttk.Label(row, text="minutes").pack(side="left")
         self.in_app_btn = ttk.Button(row, text="Enable", command=self._toggle_in_app_scheduler)
-        self.in_app_btn.pack(side="left", padx=(12, 0))
+        self.in_app_btn.pack(side="left", padx=(gap_status, 0))
         self.in_app_status_var = tk.StringVar(value="Off.")
-        ttk.Label(row, textvariable=self.in_app_status_var).pack(side="left", padx=6)
+        ttk.Label(row, textvariable=self.in_app_status_var).pack(side="left", padx=(gap_status, 0))
 
         ttk.Separator(box, orient="horizontal").pack(fill="x", padx=8, pady=(0, 8))
         ttk.Label(box, text="Startup:").pack(anchor="w", padx=8)
@@ -1377,15 +1474,16 @@ class ScrapifyApp:
         row = ttk.Frame(box)
         row.pack(fill="x", padx=8, pady=8)
         ttk.Label(row, text="Sync every").pack(side="left")
-        ttk.Entry(row, textvariable=self.interval_var, width=5).pack(side="left", padx=4)
+        ttk.Entry(row, textvariable=self.interval_var, width=5).pack(side="left", padx=gap_unit)
         ttk.Label(row, text="minutes").pack(side="left")
-        ttk.Button(row, text="Install", command=self._install_background_clicked).pack(side="left", padx=(12, 0))
-        ttk.Button(row, text="Remove", command=self._remove_background_clicked).pack(side="left", padx=6)
+        ttk.Button(row, text="Install", command=self._install_background_clicked).pack(side="left", padx=(gap_status, 0))
+        ttk.Button(row, text="Remove", command=self._remove_background_clicked).pack(side="left", padx=(gap_controls, 0))
         self.bg_status_var = tk.StringVar(value="Checking...")
-        ttk.Label(row, textvariable=self.bg_status_var).pack(side="left", padx=6)
+        ttk.Label(row, textvariable=self.bg_status_var).pack(side="left", padx=(gap_status, 0))
         ttk.Label(box, text="Use one of the two at a time; the app asks before running both.",
                   style="Muted.TLabel", wraplength=680, justify="left").pack(anchor="w", padx=8, pady=(0, 8))
         self._refresh_background_status()
+        self._even_out(frame)
 
     def _on_direction_changed(self):
         self.config["sync_direction"] = self.sync_direction_var.get()
@@ -1540,8 +1638,8 @@ class ScrapifyApp:
             ttk.Label(row, text=label).pack(side="left")
             var = tk.StringVar(value=str(self.config[key]))
             self._number_setting(var, key, cast, valid)
-            ttk.Entry(row, textvariable=var, width=6).pack(side="left", padx=4)
-            ttk.Label(row, text=hint).pack(side="left", padx=(8, 0))
+            ttk.Entry(row, textvariable=var, width=6).pack(side="left", padx=(gap_unit, 0))
+            ttk.Label(row, text=hint).pack(side="left", padx=(gap_status, 0))
             setattr(self, {"match_threshold": "threshold_var", "sync_timeout_multiplier": "timeout_var",
                            "retry_attempts": "retry_var"}[key], var)
 
@@ -1576,10 +1674,13 @@ class ScrapifyApp:
         self.auto_update_check = ttk.Checkbutton(
             box, text="Download and install updates without asking", variable=self.auto_update_var,
             command=lambda: self._save_setting("auto_update", self.auto_update_var.get()))
-        self.auto_update_check.pack(anchor="w", padx=(28, 8), pady=(0, 0))
+        # the dependent checkbox starts where the one it depends on has its text, its note where its
+        # own text is
+        indent = 8 + check_text_offset - check_box_inset
+        self.auto_update_check.pack(anchor="w", padx=(indent, 8), pady=(0, 0))
         ttk.Label(box, text="Scrapify gives you 15 seconds' notice before it restarts, or installs quietly when "
-                            "it's in the tray.", style="Muted.TLabel", wraplength=640,
-                  justify="left").pack(anchor="w", padx=(50, 8), pady=(0, 4))
+                            "it's in the tray.", style="Muted.TLabel", wraplength=620,
+                  justify="left").pack(anchor="w", padx=(indent + check_text_offset, 8), pady=(0, 4))
         row = ttk.Frame(box)
         row.pack(fill="x", padx=8, pady=(4, 8))
         self.check_now_btn = ttk.Button(row, text="Check for Updates Now",
@@ -1587,7 +1688,7 @@ class ScrapifyApp:
         self.check_now_btn.pack(side="left")
         self.update_status_var = tk.StringVar(value="" if sysutil.frozen else
                                               "A copy run from source updates with git pull.")
-        ttk.Label(row, textvariable=self.update_status_var, style="Muted.TLabel").pack(side="left", padx=(10, 0))
+        ttk.Label(row, textvariable=self.update_status_var, style="Muted.TLabel").pack(side="left", padx=(gap_status, 0))
         if not sysutil.frozen:
             check.state(["disabled"])
             self.auto_update_check.state(["disabled"])
@@ -1606,7 +1707,7 @@ class ScrapifyApp:
         row.pack(fill="x", padx=8, pady=8)
         self.profile_select = BrowserSelectDropdown(row)
         self.profile_select.pack(side="left")
-        ttk.Button(row, text="Clear", command=self._clear_login_profiles).pack(side="left", padx=(8, 0))
+        ttk.Button(row, text="Clear", command=self._clear_login_profiles).pack(side="left", padx=(gap_controls, 0))
 
         box = self._section(frame, "Optimization", "Chromium flags that trim what a sync starts up. "
                                                    "All on by default; turn one off only if it causes trouble.")
@@ -1614,6 +1715,7 @@ class ScrapifyApp:
             var = self.config_toggles[f"opt_{key}"] = tk.BooleanVar(value=self.config[f"opt_{key}"])
             ttk.Checkbutton(box, text=label, variable=var,
                             command=self._toggle_setting(var, f"opt_{key}")).pack(anchor="w", padx=8, pady=(0, 4))
+        self._even_out(frame)
 
     # ---------------------------------------------------------------- updates
 
@@ -2172,6 +2274,22 @@ class ScrapifyApp:
             self._apply_sv_theme(dark)
         else:
             self._apply_fallback_theme(dark)
+        self._even_accounts_rows()
+
+    def _even_accounts_rows(self):
+        # every accounts row as tall as the ones with a button in, so text rows and button rows space
+        # alike (text rows were a button's height shorter, which bunched them up). measured after the
+        # theme: its buttons are a different size from tk's own
+        box = getattr(self, "_accounts_box", None)
+        if box is None:
+            return
+        # a row's minimum includes the padding around what's in it, 2 above and 2 below here
+        height = max(self.chromium_install_btn.winfo_reqheight(), self._accounts_menu.winfo_reqheight()) + 4
+        self._accounts_row_height = height
+        for row in (0, 1, 2, 3):
+            box.grid_rowconfigure(row, minsize=height)
+        if self.browser_var.get() == bsc.browser_names["other"]:
+            box.grid_rowconfigure(6, minsize=height)
 
     def _apply_sv_theme(self, dark):
         sv_ttk.set_theme("dark" if dark else "light", self.root)
@@ -2196,32 +2314,107 @@ class ScrapifyApp:
             margin = getattr(self, "_tab_margin", self.chrome.px(logo_size + logo_gap))
             self._tab_margin_applied = margin
             style.configure("TNotebook", tabmargins=[margin, 0, 0, 0])
-            self._seamless_notebook_border(dark)
+            self._rounded_notebook(dark)
         else:
-            style.configure("TNotebook", tabmargins=[0, 0, 0, 0])
+            style.configure("TNotebook", tabmargins=[0, 0, 0, 0], tabposition="nw")
             style.layout("TNotebook", [("Notebook.border", {"sticky": "nsew", "children": [("TNotebook.Tab", {"expand": 1})]})])
+            style.layout("TNotebook.Tab", [("Notebook.tab", {"sticky": "nswe", "children": [
+                ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [
+                        ("Notebook.label", {"side": "top", "sticky": ""})]})]})]})])
         self._dark_title_bar(self.root, redraw=True)
+        sysutil.set_menu_theme(dark)  # the tray's right click menu
 
-    def _seamless_notebook_border(self, dark):
-        # sun valley's notebook frame is a rounded grey card with the page color baked into its
-        # corners and antialiased curve, which shows as specks on our grey window. the window is
-        # that same grey now, so the card is drawn as plain grey: no corners left to show
-        style = ttk.Style(self.root)
-        name = "Seamless.Notebook.border"
+    def _tab_geometry(self):
+        """Where things go in a tab's slot, from the tab font's own measurements.
+
+        body: the row (from the slot's top) the letters' body is centered on, capital top to baseline.
+        pill_top / pill_bottom: the rounded rectangle's inset from the slot's top and bottom, centering
+        it on that same row.
+        """
+        px = self.chrome.px
         try:
-            if name not in style.element_names():
-                from PIL import Image, ImageTk
-                sheet = os.path.join(os.path.dirname(sv_ttk.__file__), "theme",
-                                     f"spritesheet_{'dark' if dark else 'light'}.png")
-                with Image.open(sheet) as image:
-                    border = image.convert("RGBA").crop((50, 0, 90, 40))  # notebook-border in sprites_*.tcl
-                border = Image.new("RGBA", border.size, border.getpixel((20, 20)))
-                images = self.__dict__.setdefault("_border_images", {})
-                images[dark] = ImageTk.PhotoImage(border, master=self.root)
-                style.element_create(name, "image", images[dark], border=5, padding=5)
-            style.layout("TNotebook", [(name, {"sticky": "nsew", "children": [("TNotebook.Tab", {"expand": 1})]})])
+            font = tkfont.nametofont("SunValleyBodyFont", root=self.root)
         except Exception:
-            pass  # the stock frame, specks and all
+            font = tkfont.nametofont("TkDefaultFont", root=self.root)
+        ascent, linespace = font.metrics("ascent"), font.metrics("linespace")
+        size = int(font.actual("size"))
+        size_px = -size if size < 0 else round(size * self.root.winfo_fpixels("1i") / 72)
+        cap = round(cap_height_ratio * size_px)
+        top, bottom = px(tab_text_top), px(tab_text_bottom)
+        baseline = top + ascent - 1  # the last row of the letters (the ones without descenders)
+        body = baseline - (cap - 1) / 2
+        pill = px(tab_pill_height)
+        pill_top = math.floor(body - (pill - 1) / 2 + 0.5)
+        height = top + linespace + bottom
+        return {"body": body, "pill_top": pill_top, "pill_bottom": height - pill_top - pill,
+                "text_top": top, "text_bottom": bottom, "height": height}
+
+    def _rounded_notebook(self, dark):
+        """The built app's tab row and pages: pages on a rounded panel, tabs as rounded rectangles.
+
+        Sun valley draws the whole notebook as one rounded grey card with square pages inside it.
+        On our grey window that card can't be seen, so the pages get the rounded corners instead:
+        the client area is a rounded panel in the page color, its corners in the row's grey.
+        """
+        style, p = ttk.Style(self.root), sv_colors[dark]
+        theme = "sv_dark" if dark else "sv_light"
+        try:
+            if "Rounded.Notebook.client" not in style.element_names():
+                from PIL import Image, ImageDraw, ImageTk
+                radius, big = self.chrome.px(page_radius), 4  # drawn 4x then shrunk, that's the antialiasing
+                # a wide plain middle: ttk fills the page by repeating it, and a tiny one means tens of
+                # thousands of copies per redraw (an 18px image froze the window for seconds)
+                size = 2 * radius + 64
+                image = Image.new("RGB", (size * big, size * big), p["chrome"])
+                ImageDraw.Draw(image).rounded_rectangle((0, 0, size * big - 1, size * big - 1),
+                                                        radius=radius * big, fill=p["bg"])
+                images = self.__dict__.setdefault("_page_images", {})
+                images[dark] = ImageTk.PhotoImage(image.resize((size, size), Image.LANCZOS), master=self.root)
+                # the pages (square, page colored) sit just far enough in to never cover the curve
+                inset = max(1, round(radius * 0.3) + 1)
+                self._page_inset = inset
+                style.element_create("Rounded.Notebook.client", "image", images[dark],
+                                     border=radius, padding=inset, sticky="nsew")
+            if "Pill.Notebook.tab" not in style.element_names():
+                # a rounded rectangle around each tab's text instead of sun valley's tab joined to
+                # the page: page colored when selected, sun valley's hover shade under the mouse,
+                # nothing at rest. it's inset the same at the top and bottom of the tab's slot and the
+                # text's padding is even too, so the text sits dead center in it
+                from PIL import Image, ImageDraw, ImageTk
+                geometry = self._tab_geometry()
+                side, top, bottom = self.chrome.px(tab_pill_side), geometry["pill_top"], geometry["pill_bottom"]
+                radius, big = self.chrome.px(tab_pill_radius), 4
+                # the parts that keep their size, and a wide middle to stretch (see the panel above)
+                edge_x, edge_top, edge_bottom = side + radius, top + radius, bottom + radius
+                w, h = 2 * edge_x + 64, edge_top + edge_bottom + 64
+
+                def tab_image(fill):
+                    image = Image.new("RGB", (w * big, h * big), p["chrome"])
+                    if fill:
+                        ImageDraw.Draw(image).rounded_rectangle(
+                            (side * big, top * big, (w - side) * big - 1, (h - bottom) * big - 1),
+                            radius=radius * big, fill=fill)
+                    return ImageTk.PhotoImage(image.resize((w, h), Image.LANCZOS), master=self.root)
+
+                tabs = self.__dict__.setdefault("_tab_images", {})
+                tabs[dark] = [tab_image(None), tab_image(p["bg"]), tab_image(p["tab_hover"])]
+                style.element_create("Pill.Notebook.tab", "image", tabs[dark][0],
+                                     ("selected", tabs[dark][1]), ("active", tabs[dark][2]),
+                                     border=(edge_x, edge_top, edge_x, edge_bottom),
+                                     padding=(self.chrome.px(16), geometry["text_top"],
+                                              self.chrome.px(16), geometry["text_bottom"]), sticky="nsew",
+                                     # the size comes from the text and its padding, not the image's
+                                     width=2 * edge_x, height=edge_top + edge_bottom)
+            style.layout("TNotebook", [("Rounded.Notebook.client", {"sticky": "nsew"})])
+            style.layout("TNotebook.Tab", [("Pill.Notebook.tab", {"sticky": "nswe", "children": [
+                ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [
+                        ("Notebook.label", {"side": "top", "sticky": ""})]})]})]})])
+            style.configure("TNotebook", background=p["chrome"],  # behind the tabs
+                            tabposition="nw")  # placed by their margin, see _layout_chrome
+        except Exception:
+            pass  # sun valley's stock card
 
     def _dark_title_bar(self, window, redraw=False):
         # windows draws the title bar itself, ask dwm for the dark one to match
