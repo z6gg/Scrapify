@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="64" viewBox="0 0 240 64">
+<defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#4fc3f7"/><stop offset="1" stop-color="#a33ff0"/></linearGradient>
+<linearGradient id="s" x1="0" x2="1"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<clipPath id="c"><rect width="240" height="64" rx="16"/></clipPath></defs>
+<g clip-path="url(#c)"><rect width="240" height="64" fill="url(#g)"/>
+<rect x="-80" y="-20" width="60" height="104" fill="url(#s)" transform="skewX(-20)"><animate attributeName="x" values="-120;320;320" keyTimes="0;.45;1" dur="3.2s" repeatCount="indefinite"/></rect></g>
+<g transform="translate(34 22)"><g fill="#fff"><rect x="0" y="0" width="9" height="9" rx="1"/><rect x="10" y="0" width="9" height="9" rx="1"/><rect x="0" y="10" width="9" height="9" rx="1"/><rect x="10" y="10" width="9" height="9" rx="1"/></g></g>
+<text x="66" y="40" font-family="'Segoe UI Variable Display','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif" font-size="22" font-weight="600" fill="#fff">Download</text>
+<text x="176" y="39" font-family="'Segoe UI Variable Display','Segoe UI',-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif" font-size="13" fill="#fff" fill-opacity=".8">· Free</text>
+</svg>

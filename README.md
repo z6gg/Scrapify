@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/z6gg/Scrapify/releases/latest/download/Scrapify-Setup.exe">
-    <img src="https://img.shields.io/badge/Download-4fc3f7?style=for-the-badge&logo=windows11&logoColor=white" alt="Download" height="40">
+    <img src="assets/download.svg" alt="Download" width="240">
   </a>
 </p>
 
