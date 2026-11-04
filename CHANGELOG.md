@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1
+
+- Notes and hints show in grey again, instead of the same color as the main text
+- The Get Sessions note on the Setup tab fits on one line
+- An About section at the bottom of Settings, with the version, the license and who made Scrapify
+
 ## 1.3.0
 
 - Right-click a playlist pair to edit it, exclude songs, remove it or add a new one, the same as the buttons under the list
