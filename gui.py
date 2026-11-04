@@ -74,7 +74,9 @@ default_settings = {
     "dark_mode": False,
     "minimize_on_close": True,
     "check_updates": True,
+    "auto_update": False,
 }
+update_check_interval_ms = 12 * 60 * 60 * 1000  # while scrapify stays open in the tray
 muted_gray = "#606060"
 dark_colors = {"bg": "#1e1e1e", "fg": "#e6e6e6", "field_bg": "#2b2b2b", "button_bg": "#3c3c3c",
                "button_active": "#4a4a4a", "select_bg": "#3d6fb4", "select_fg": "#ffffff", "muted": "#9a9a9a",
@@ -527,10 +529,10 @@ class ScrapifyApp:
         if self.settings.get("mode") == "open":
             self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
         self._updating = False
+        self._declined_version = None
         if sysutil.frozen:
             self.root.after(300, self._after_update)
-            if self.settings.get("check_updates", True):
-                self.root.after(3000, lambda: self._check_for_updates(quiet=True))
+            self.root.after(3000, self._tick_update_check)
 
     # ---------------------------------------------------------------- helpers
 
@@ -1392,17 +1394,26 @@ class ScrapifyApp:
                 ttk.Button(box, text="Clear Sync Log", command=self._clear_sync_log).pack(anchor="w", padx=8, pady=(0, 8))
 
         box = self._section(frame, "Updates",
-                            f"You have version {version}. Scrapify looks for a new version on GitHub each time it "
-                            "opens and asks before updating. Settings and logins stay as they are."
+                            f"You have version {version}. Scrapify looks for a new version on GitHub when it opens "
+                            "and twice a day while it runs. Settings and logins stay as they are when it updates."
                             + ("" if sysutil.frozen else " (built app only)"))
         self.check_updates_var = tk.BooleanVar(value=self.settings.get("check_updates", True))
-        check = ttk.Checkbutton(box, text="Check for updates when Scrapify opens", variable=self.check_updates_var,
-                                command=lambda: self._save_setting("check_updates", self.check_updates_var.get()))
+        self.auto_update_var = tk.BooleanVar(value=self.settings.get("auto_update", False))
+        check = ttk.Checkbutton(box, text="Check for updates automatically", variable=self.check_updates_var,
+                                command=self._on_check_updates_changed)
         check.pack(anchor="w", padx=8, pady=(4, 4))
-        ttk.Button(box, text="Check Now", command=lambda: self._check_for_updates(quiet=False)).pack(
-            anchor="w", padx=8, pady=(0, 8))
+        self.auto_update_check = ttk.Checkbutton(
+            box, text="Install updates without asking (Scrapify restarts on its own once no sync is running)",
+            variable=self.auto_update_var,
+            command=lambda: self._save_setting("auto_update", self.auto_update_var.get()))
+        self.auto_update_check.pack(anchor="w", padx=(28, 8), pady=(0, 4))
+        ttk.Button(box, text="Check for Updates Now", command=lambda: self._check_for_updates(quiet=False)).pack(
+            anchor="w", padx=8, pady=(4, 8))
         if not sysutil.frozen:
             check.state(["disabled"])
+            self.auto_update_check.state(["disabled"])
+        elif not self.check_updates_var.get():
+            self.auto_update_check.state(["disabled"])
 
         box = self._section(frame, "Your Files",
                             f"Settings, logins and the sync log are kept in {sysutil.data_dir()}, not in the app folder.")
@@ -1446,13 +1457,28 @@ class ScrapifyApp:
                     self._ui(messagebox.showerror, app_name, f"Couldn't check for updates:\n{e}")
                 return
             if found:
-                self._ui(self._offer_update, found)
+                self._ui(self._offer_update, found, quiet)
             elif not quiet:
                 self._ui(messagebox.showinfo, app_name, f"You have the latest version ({version}).")
         threading.Thread(target=work, daemon=True).start()
 
-    def _offer_update(self, found):
+    def _on_check_updates_changed(self):
+        on = self.check_updates_var.get()
+        self._save_setting("check_updates", on)
+        self.auto_update_check.state(["!disabled"] if on else ["disabled"])
+
+    def _tick_update_check(self):
+        if self.settings.get("check_updates", True):
+            self._check_for_updates(quiet=True)
+        self.root.after(update_check_interval_ms, self._tick_update_check)
+
+    def _offer_update(self, found, quiet=False):
         if self._updating:
+            return
+        if quiet and found.version == self._declined_version:
+            return  # already said no to this one since opening
+        if quiet and self.settings.get("auto_update") and updater.can_update():
+            self._auto_update(found)
             return
         self._restore_from_tray()
         size = f"{found.size / 1_000_000:.0f} MB" if found.size else "the update"
@@ -1465,6 +1491,7 @@ class ScrapifyApp:
         if not messagebox.askyesno(app_name, f"Scrapify {found.version} is out. You have {version}.\n\n"
                                              f"Update now? It downloads {size} and restarts Scrapify. "
                                              "Your settings, logins and playlist pairs stay as they are."):
+            self._declined_version = found.version
             return
         # nothing may sync while files are swapped: hold the in app lock and the one every process shares
         if self._refreshing or not self.sync_lock.acquire(blocking=False):
@@ -1503,13 +1530,7 @@ class ScrapifyApp:
 
         def give_up(message=None):
             dialog.destroy()
-            shared_lock.release()
-            self.sync_lock.release()
-            self._updating = False
-            self.auto_stop.clear()
-            if self.settings.get("mode") == "open":
-                self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
-            updater.clean_leftovers()
+            self._abort_update(shared_lock)
             if message:
                 messagebox.showerror(app_name, message)
 
@@ -1527,25 +1548,78 @@ class ScrapifyApp:
         def finish(new_app):
             status.set("Restarting Scrapify...")
             cancel.state(["disabled"])
-            # the background sync runs from this same exe, so it has to stop too, and comes back after
-            restart_background = None
-            if is_background_sync_installed() and is_daemon_running():
-                restart_background = int(self.settings.get("interval_minutes", 30))
-            others = updater.other_app_processes()
-            for proc in others:
-                sysutil.kill_pid(proc.pid)
-            try:
-                updater.apply(new_app, found, [os.getpid()] + [p.pid for p in others], restart_background)
-            except Exception as e:
-                if restart_background:
-                    install_background_sync(restart_background)
-                give_up(f"Couldn't start the update:\n{e}\n\nNothing was changed.")
-                return
-            shared_lock.release()
-            _release_single_instance()  # or the new version would see us and quit
-            self._shutdown()
+            problem = self._swap_and_restart(found, new_app, shared_lock)
+            if problem:
+                give_up(f"Couldn't start the update:\n{problem}\n\nNothing was changed.")
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _auto_update(self, found):
+        # downloads in the background, then installs at the first moment no sync is running
+        self._updating = True
+        log = logging.getLogger(__name__)
+        log.info(f"Downloading Scrapify {found.version} in the background")
+
+        def work():
+            try:
+                new_app = updater.download(found)
+            except Exception as e:
+                log.warning(f"The automatic update to {found.version} didn't download: {e}")
+                self._ui(self._abort_update, None)
+                return
+            self._ui(self._install_when_idle, found, new_app)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _install_when_idle(self, found, new_app):
+        retry = lambda: self.root.after(60_000, lambda: self._install_when_idle(found, new_app))
+        if self._refreshing or not self.sync_lock.acquire(blocking=False):
+            retry()
+            return
+        shared_lock = sysutil.SyncLock()
+        if not shared_lock.acquire():
+            self.sync_lock.release()
+            retry()
+            return
+        self.auto_stop.set()
+        self._notify(f"Updating to Scrapify {found.version}. It restarts in a moment.", always=True)
+        problem = self._swap_and_restart(found, new_app, shared_lock)
+        if problem:
+            logging.getLogger(__name__).warning(f"The automatic update to {found.version} didn't start: {problem}")
+            self._abort_update(shared_lock)
+
+    def _swap_and_restart(self, found, new_app, shared_lock):
+        # hands the swap to the update script and quits. returns what went wrong, or None
+        # the background sync runs from this same exe, so it has to stop too, and comes back after
+        restart_background = None
+        if is_background_sync_installed() and is_daemon_running():
+            restart_background = int(self.settings.get("interval_minutes", 30))
+        others = updater.other_app_processes()
+        for proc in others:
+            sysutil.kill_pid(proc.pid)
+        try:
+            updater.apply(new_app, found, [os.getpid()] + [p.pid for p in others], restart_background)
+        except Exception as e:
+            if restart_background:
+                try:
+                    install_background_sync(restart_background)
+                except Exception:
+                    pass
+            return str(e) or type(e).__name__
+        shared_lock.release()
+        _release_single_instance()  # or the new version would see us and quit
+        self._shutdown()
+        return None
+
+    def _abort_update(self, shared_lock):
+        # back to normal after an update that was cancelled or failed
+        if shared_lock is not None:
+            shared_lock.release()
+            self.sync_lock.release()
+        self._updating = False
+        self.auto_stop.clear()
+        if self.settings.get("mode") == "open":
+            self._start_in_app_scheduler(int(self.settings.get("interval_minutes", 30)))
+        updater.clean_leftovers()
 
     def _after_update(self):
         # the first launch after an update: say what changed, or that it didn't go through

@@ -26,7 +26,7 @@ Everything it needs is in that folder, including its own copy of Chromium. No ad
 
 Windows may warn about an unknown app the first time, since the exe isn't signed. Click More info > Run anyway.
 
-After that, Scrapify checks for a new version each time it opens and asks before updating itself. It shows what changed once it restarts. Most updates are small, since Chromium is only downloaded again when it changes. You can turn the check off on the Settings tab.
+After that, Scrapify checks for a new version each time it opens and asks before updating itself. It shows what changed once it restarts. Most updates are small, since Chromium is only downloaded again when it changes. On the Settings tab you can turn the check off, check by hand, or let it install updates without asking.
 
 ## Setup
 
