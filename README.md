@@ -83,6 +83,17 @@ Scrapify isn't affiliated with Spotify or Anghami. It uses their web players thr
 
 GPLv3, see [LICENSE](LICENSE).
 
+## Donations
+
+Scrapify is free. Donations would be appreciated.
+
+| Coin | Address |
+| --- | --- |
+| Bitcoin (BTC) | `15Am8XjFayovhiTbzxxQYMFYHq4bP2Cayk` |
+| Ethereum (ETH, ERC-20) | `0xe2111f2025c82870530f3eb23a38b4b9f5f430ef` |
+| Litecoin (LTC) | `LQWqYC5Fwtw4m8KNXchUH1iE5PX5QX6HqG` |
+| Tron (TRX, TRC-20) | `TLLWvpP4rTcnnMvHwHnjXBnKiwMVQnmt8q` |
+
 ---
 
 *Human directed, made with Claude Opus 5.5.*
