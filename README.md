@@ -17,8 +17,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/z6gg/Scrapify/releases/latest"><img src="https://img.shields.io/github/v/release/z6gg/Scrapify?style=for-the-badge&label=version&color=a33ff0&labelColor=1b1d23" alt="Latest version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-1ed760?style=for-the-badge&labelColor=1b1d23" alt="License"></a>
+  <a href="https://github.com/z6gg/Scrapify/releases/latest"><img src="https://img.shields.io/github/v/release/z6gg/Scrapify?style=for-the-badge&label=version&color=8f2bf2&labelColor=1b1d23" alt="Latest version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-2ee06c?style=for-the-badge&labelColor=1b1d23" alt="License"></a>
 </p>
 
 ## Features
