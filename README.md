@@ -73,7 +73,7 @@ python gui.py
 
 `python buildexe.py` builds `dist/Scrapify/` and its zips, and `Scrapify-Setup.exe` too if [Inno Setup 6](https://jrsoftware.org/isdl.php) is installed.
 
-To release, bump `version.py`, add its section to `CHANGELOG.md` and push. GitHub Actions builds and publishes it, with that section as the release notes.
+If you maintain Scrapify or your own fork, release by bumping `version.py`, add its section to `CHANGELOG.md` and push. GitHub Actions builds and publishes it, with that section as the release notes.
 
 ## Disclaimer
 
