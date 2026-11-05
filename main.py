@@ -73,6 +73,7 @@ default_config = {
     "match_threshold": 87,
     "sync_direction": "spotify_to_anghami",
     "retry_attempts": 2,
+    "request_speed": bsc.default_request_speed,
     "pause_while_running": [],
     "pause_while_fullscreen": False,
     "show_browser": False,
@@ -134,6 +135,7 @@ def make_client(platform, playwright, config):
         debug_dumps=config.get("debug_dumps", False),
         timeout_multiplier=config.get("sync_timeout_multiplier", 1.0),
         optimization_flags={k: config.get(f"opt_{k}", on) for k, on in bsc.default_browser_flags.items()},
+        request_speed=config.get("request_speed", bsc.default_request_speed),
     )
 
 
@@ -266,6 +268,11 @@ def _sync_pair(pair, direction, clients, config, summary, dry_run, confirm_creat
             log.error("[%s] Invalid playlist link: %s", name, e)
             summary["errors"].append({"pair": name, "type": "invalid_link", "message": str(e)})
             return
+        except bsc.RateLimitedError as e:
+            # not retried, and the run stops: every pair would hit the same limit
+            log.error("[%s] %s", name, e)
+            summary["errors"].append({"pair": name, "type": "rate_limited", "message": str(e)})
+            raise
         except Exception as e:
             if attempt < retries:
                 log.warning("[%s] Sync attempt %d failed, retrying: %s", name, attempt + 1, e)
@@ -323,8 +330,11 @@ def _run(summary, direction, pair_names, dry_run, confirm_create):
     with sync_playwright() as p:
         with make_client("spotify", p, config) as sp, make_client("anghami", p, config) as ag:
             clients = {"spotify": sp, "anghami": ag}
-            for pair in pairs:
-                _sync_pair(pair, direction, clients, config, summary, dry_run, confirm_create)
+            try:
+                for pair in pairs:
+                    _sync_pair(pair, direction, clients, config, summary, dry_run, confirm_create)
+            except bsc.RateLimitedError:
+                log.error("Stopped this sync run early so the account isn't pushed any further.")
     log.info("Sync run complete.")
 
 

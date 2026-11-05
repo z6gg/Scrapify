@@ -12,7 +12,7 @@ from pathlib import Path
 
 import browsersessioncommon as bsc
 from matcher import best_match, find_many
-from browsersessioncommon import AuthError, PlaylistNotFoundError
+from browsersessioncommon import AuthError, PlaylistNotFoundError, RateLimitedError
 
 selectors = {
     # the header row is aria-rowindex 1
@@ -43,6 +43,7 @@ def playlist_id_of(playlist_url):
 
 class SpotifyScraper(bsc.BrowserClient):
     session_file = "spotify_session.json"
+    service = "Spotify"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -148,6 +149,8 @@ class SpotifyScraper(bsc.BrowserClient):
                     if result is None:
                         raise RuntimeError("a playlist page failed to load")
                     items += result["data"]["playlistV2"]["content"].get("items") or []
+        except RateLimitedError:
+            raise
         except Exception as e:
             self.log.info("Spotify fetchPlaylist replay failed: %s", e)
             return None
@@ -278,12 +281,18 @@ class SpotifyScraper(bsc.BrowserClient):
             pass
 
     def _api_post(self, body):
-        # the token lasts about an hour, a 401 takes a fresh one and retries once
-        resp = self._context.request.post(self._api_url, data=json.dumps(body), headers=self._api_headers,
-                                          timeout=self._t(20000))
+        # the token lasts about an hour, a 401 takes a fresh one and retries once. a 429 waits and
+        # retries once, a second one stops the sync
+        post = lambda: self._context.request.post(self._api_url, data=json.dumps(body), headers=self._api_headers,
+                                                  timeout=self._t(20000))
+        resp = post()
         if resp.status == 401 and self._refresh_api_auth():
-            resp = self._context.request.post(self._api_url, data=json.dumps(body), headers=self._api_headers,
-                                              timeout=self._t(20000))
+            resp = post()
+        if resp.status == 429:
+            self._back_off(resp.headers.get("retry-after"))
+            resp = post()
+            if resp.status == 429:
+                raise RateLimitedError(bsc.rate_limited_message(self.service))
         if not resp.ok:
             raise RuntimeError(f"{body.get('operationName')} returned HTTP {resp.status}")
         result = resp.json()
@@ -303,7 +312,7 @@ class SpotifyScraper(bsc.BrowserClient):
             headers = {k: v for k, v in self._api_headers.items()
                        if k.lower() not in ("user-agent", "accept-encoding", "referer", "origin")
                        and not k.lower().startswith("sec-")}
-            raw = bsc.fetch_many(self._light_page, [(self._api_url, {"method": "POST", "headers": headers,
+            raw = self._fetch_many(self._light_page, [(self._api_url, {"method": "POST", "headers": headers,
                                                                      "body": json.dumps(b)}) for b in bodies])
             if attempt == 0 and any(status == 401 for status, _ in raw) and self._refresh_api_auth():
                 continue
@@ -465,7 +474,7 @@ class SpotifyScraper(bsc.BrowserClient):
                 "interactionId": None,
             })
             current = {t["uri"] for t in self.get_playlist_tracks(playlist_url)}
-        except (AuthError, PlaylistNotFoundError):
+        except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
             self.log.warning("Spotify: adding failed (%s), nothing was added this run.", e)
@@ -502,7 +511,7 @@ class SpotifyScraper(bsc.BrowserClient):
             self._api_call("removeFromPlaylist", {"playlistUri": f"spotify:playlist:{playlist_id_of(playlist_url)}",
                                                   "uids": [m["uid"] for _t, m in targets]})
             left = {t.get("uid") for t in self.get_playlist_tracks(playlist_url)}
-        except (AuthError, PlaylistNotFoundError):
+        except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
             self.log.warning("Spotify: removing failed (%s).", e)

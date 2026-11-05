@@ -1196,6 +1196,7 @@ class ScrapifyApp:
         self.threshold_var.set(str(self.config["match_threshold"]))
         self.timeout_var.set(str(self.config["sync_timeout_multiplier"]))
         self.retry_var.set(str(self.config["retry_attempts"]))
+        self.request_speed_var.set(self.config.get("request_speed", "balanced"))
         self.sync_direction_var.set(self.config["sync_direction"])
         self.pause_processes_var.set(", ".join(self.config["pause_while_running"]))
         for key, var in self.config_toggles.items():
@@ -1411,6 +1412,9 @@ class ScrapifyApp:
         errors = summary.get("errors") or []
         auth = [e["pair"] for e in errors if e["type"] == "auth"]
         links = [f"{e['pair']}: {e['message']}" for e in errors if e["type"] == "invalid_link"]
+        limited = [e["message"] for e in errors if e["type"] == "rate_limited"]
+        if limited:
+            problems.append(limited[0])
         if auth:
             problems.append(f"Login problem syncing {', '.join(auth)}.\n\n"
                             "The saved session looks expired. Get a fresh one on the Setup tab.")
@@ -1662,6 +1666,22 @@ class ScrapifyApp:
         check.pack(anchor="w", padx=8, pady=(4, 8))
         if not has_tray:
             check.state(["disabled"])
+
+        box = self._section(frame, "Request speed",
+                            "How fast Scrapify searches and reads on Spotify and Anghami during a sync. Most syncs "
+                            "only change a few songs and take seconds at any speed; a big first sync takes longer "
+                            "on the safer settings.")
+        self.request_speed_var = tk.StringVar(value=self.config.get("request_speed", "balanced"))
+        for value, label in (("gentle", "Safer: one or two requests at a time, with longer pauses"),
+                             ("balanced", "Balanced: a few at a time, with short pauses (default)"),
+                             ("fast", "Fast: as many as the browser allows, no pauses")):
+            ttk.Radiobutton(box, text=label, value=value, variable=self.request_speed_var,
+                            command=self._toggle_setting(self.request_speed_var, "request_speed")).pack(
+                anchor="w", padx=8, pady=(4, 0))
+        ttk.Label(box, text="Note: faster potentially means higher risk. Rapid requests look less like a person "
+                            "using the site and are more likely to get your account rate limited or flagged. If a "
+                            "site says to slow down, Scrapify waits once, then stops the sync at any speed.",
+                  style="Muted.TLabel", wraplength=620, justify="left").pack(anchor="w", padx=8, pady=(6, 8))
 
         for title, text, label, key, cast, valid, hint in (
             ("Matching", "How close a title and artist must be to count as the same song. Lower catches more "

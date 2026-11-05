@@ -33,6 +33,22 @@ class AuthError(Exception):
 class PlaylistNotFoundError(Exception):
     """logged in, but the link doesn't lead to a readable playlist"""
 
+
+class RateLimitedError(Exception):
+    """the site kept answering "too many requests", so the sync stops instead of pushing on"""
+
+
+def rate_limited_message(service):
+    return (f"{service} is limiting how fast Scrapify can make requests, so this sync stopped to protect your "
+            "account. Try again later, or pick a gentler request speed in Settings.")
+
+
+# requests at once, seconds between batches, seconds before searching again for songs not found
+request_speeds = {"gentle": (2, 1.0, 10), "balanced": (3, 0.4, 5), "fast": (6, 0.0, 0)}
+default_request_speed = "balanced"
+rate_limit_wait = 30  # when "too many requests" doesn't say how long to wait
+rate_limit_max_wait = 120
+
 exe_cache_file = "browser_paths.json"
 
 chromium_engine = "chromium"
@@ -99,9 +115,9 @@ _fetch_many_js = """async ([requests, parallel]) => {
             const i = next++;
             try {
                 const r = await fetch(requests[i][0], requests[i][1]);
-                out[i] = [r.status, await r.text()];
+                out[i] = [r.status, await r.text(), r.headers.get('retry-after')];
             } catch (e) {
-                out[i] = [0, String(e)];
+                out[i] = [0, String(e), null];
             }
         }
     };
@@ -226,11 +242,41 @@ def _context_with_session(browser, storage_state_file, log=print, **kwargs):
     return context
 
 
-def fetch_many(page, requests, parallel=6):
-    """[(status, text)] for [(url, fetch options)], run from inside the page a few at a time"""
+def retry_after_seconds(values):
+    # the longest wait any "too many requests" answer asked for, within reason
+    asked = []
+    for v in values:
+        try:
+            asked.append(float(v))
+        except (TypeError, ValueError):
+            pass
+    return min(max(asked), rate_limit_max_wait) if asked else rate_limit_wait
+
+
+def fetch_many(page, requests, parallel=6, pause=0.0, service="The site", log=None):
+    """[(status, text)] for [(url, fetch options)], run from inside the page `parallel` at a time
+    with `pause` seconds between batches. "too many requests" (429) waits, then retries those one
+    at a time; a second 429 raises RateLimitedError rather than keep pushing"""
     if not requests:
         return []
-    return [tuple(r) for r in page.evaluate(_fetch_many_js, [[list(r) for r in requests], parallel])]
+    out = []
+    for start in range(0, len(requests), parallel):
+        if start and pause:
+            time.sleep(pause)
+        out += page.evaluate(_fetch_many_js, [[list(r) for r in requests[start:start + parallel]], parallel])
+    limited = [i for i, r in enumerate(out) if r[0] == 429]
+    if limited:
+        wait = retry_after_seconds([out[i][2] for i in limited])
+        (log or logging.getLogger(__name__)).warning(
+            "%s asked Scrapify to slow down, waiting %d seconds before carrying on.", service, wait)
+        time.sleep(wait)
+        for n, i in enumerate(limited):
+            if n:
+                time.sleep(max(pause, 1.0))
+            out[i] = page.evaluate(_fetch_many_js, [[list(requests[i])], 1])[0]
+            if out[i][0] == 429:
+                raise RateLimitedError(rate_limited_message(service))
+    return [(r[0], r[1]) for r in out]
 
 
 class BrowserClient:
@@ -238,11 +284,15 @@ class BrowserClient:
 
     session_file = None
     block_assets = True
+    service = "The site"
 
     def __init__(self, playwright=None, storage_state_file=None, headless=True,
-                 debug_dumps=False, timeout_multiplier=1.0, optimization_flags=None):
+                 debug_dumps=False, timeout_multiplier=1.0, optimization_flags=None,
+                 request_speed=default_request_speed):
         # pass a running sync_playwright() to share it between both clients (one per thread)
         self.storage_state_file = storage_state_file or self.session_file
+        self._parallel, self._pause, self.recheck_wait = request_speeds.get(
+            request_speed, request_speeds[default_request_speed])
         self.headless = headless
         self.debug_dumps = debug_dumps
         self.timeout_multiplier = timeout_multiplier
@@ -254,6 +304,19 @@ class BrowserClient:
 
     def _t(self, ms):
         return int(ms * self.timeout_multiplier)
+
+    def _fetch_many(self, page, requests):
+        return fetch_many(page, requests, self._parallel, self._pause, self.service, self.log)
+
+    def _back_off(self, retry_after):
+        # one "too many requests" on a single call: wait as asked, the caller retries once
+        wait = retry_after_seconds([retry_after])
+        self.log.warning("%s asked Scrapify to slow down, waiting %d seconds before carrying on.", self.service, wait)
+        time.sleep(wait)
+
+    def _wait_between_rounds(self):
+        if self.recheck_wait:
+            time.sleep(self.recheck_wait)
 
     def __enter__(self):
         if self._owns_playwright:

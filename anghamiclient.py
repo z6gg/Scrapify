@@ -11,7 +11,9 @@ import urllib.parse
 
 import browsersessioncommon as bsc
 from matcher import best_match, find_many, has_arabic, is_same_artist, match_score, normalize
-from browsersessioncommon import AuthError, PlaylistNotFoundError
+import time
+
+from browsersessioncommon import AuthError, PlaylistNotFoundError, RateLimitedError
 
 playlist_id_cache = "anghami_playlist_ids.json"
 selectors = {"track_row": "a.table-row", "track_title": ".cell-title span", "track_artist": ".cell-artist a"}
@@ -54,6 +56,7 @@ def _song(item):
 
 class AnghamiClient(bsc.BrowserClient):
     session_file = "anghami_session.json"
+    service = "Anghami"
     block_assets = False  # if its images fail the player thinks its cdn is down and reloads
 
     def __init__(self, *args, **kwargs):
@@ -178,7 +181,7 @@ class AnghamiClient(bsc.BrowserClient):
                 "headers": {"content-type": "application/x-www-form-urlencoded;charset=UTF-8"}})
         else:
             request = (self._gateway_url(params, path), {"credentials": "include"})
-        status, text = bsc.fetch_many(self._api_page, [request])[0]
+        status, text = self._fetch_many(self._api_page, [request])[0]
         if status != 200:
             raise RuntimeError(f"{params.get('type', path)} returned HTTP {status}")
         data = json.loads(text)
@@ -189,7 +192,7 @@ class AnghamiClient(bsc.BrowserClient):
 
     def _gateway_many(self, calls):
         """several GET calls [(params, path)] side by side, None for any that failed"""
-        raw = bsc.fetch_many(self._api_page, [(self._gateway_url(params, path), {"credentials": "include"})
+        raw = self._fetch_many(self._api_page, [(self._gateway_url(params, path), {"credentials": "include"})
                                               for params, path in calls])
         results = []
         for (params, path), (status, text) in zip(calls, raw):
@@ -281,7 +284,7 @@ class AnghamiClient(bsc.BrowserClient):
     def get_playlist_tracks(self, playlist_url):
         try:
             return self._read_playlist_api(self._open_api(playlist_url))
-        except (AuthError, PlaylistNotFoundError):
+        except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
             self.log.info("Anghami API read failed (%s), reading the page instead.", e)
@@ -414,6 +417,8 @@ class AnghamiClient(bsc.BrowserClient):
             for (name, _page, _sid), data in zip(more, rest):
                 section = next((s for s in (data or {}).get("sections") or [] if s.get("type") == "song"), None)
                 out[name] += [_song(it) for it in (section or {}).get("data") or [] if it.get("id")]
+        except RateLimitedError:
+            raise
         except Exception as e:
             self.log.info("Anghami: couldn't read artist pages for %s: %s", ", ".join(names), e)
         for name, songs in out.items():
@@ -451,7 +456,7 @@ class AnghamiClient(bsc.BrowserClient):
             playlist_id = self._open_api(playlist_url)
             already = {t["id"] for t in self._read_playlist_api(playlist_id)}
             hits = find_many(tracks, self.search_many, threshold, exact_version, self.log, "Anghami",
-                             self.artist_songs_many, rounds=2)
+                             self.artist_songs_many, rounds=2, between_rounds=self._wait_between_rounds)
             found = [(t, hit) for t, hit in zip(tracks, hits) if hit]
             failed = [t for t, hit in zip(tracks, hits) if not hit]
             new_ids = list(dict.fromkeys(hit["id"] for _t, hit in found if hit["id"] not in already))
@@ -461,7 +466,7 @@ class AnghamiClient(bsc.BrowserClient):
             if not found:
                 return failed
             now = {t["id"] for t in self._read_playlist_api(playlist_id)}
-        except (AuthError, PlaylistNotFoundError):
+        except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
             self.log.warning("Anghami: adding failed (%s), nothing was added this run.", e)
@@ -481,7 +486,7 @@ class AnghamiClient(bsc.BrowserClient):
         try:
             playlist_id = self._open_api(playlist_url)
             current = self._read_playlist_api(playlist_id)
-        except (AuthError, PlaylistNotFoundError):
+        except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
             self.log.warning("Anghami: couldn't read the playlist to remove songs (%s).", e)
@@ -496,16 +501,22 @@ class AnghamiClient(bsc.BrowserClient):
             else:
                 self.log.warning("Anghami: couldn't find '%s - %s' on the playlist to remove it", t["title"], t["artist"])
                 failed.append(t)
-        for t, match in targets:
+        for n, (t, match) in enumerate(targets):
+            if n:
+                time.sleep(self._pause)
             try:
                 self._gateway({"type": "PUTplaylist", "playlistid": playlist_id,
                                "action": "delete", "songid": match["id"]}, post=True)
+            except RateLimitedError:
+                raise
             except Exception as e:
                 self.log.warning("Anghami: removing '%s - %s' failed: %s", t["title"], t["artist"], e)
         if not targets:
             return failed
         try:
             left = {t["id"] for t in self._read_playlist_api(playlist_id)}
+        except RateLimitedError:
+            raise
         except Exception as e:
             self.log.warning("Anghami: couldn't re-read the playlist after removing (%s).", e)
             return failed + [t for t, _m in targets]

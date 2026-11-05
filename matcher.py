@@ -479,12 +479,14 @@ class _NeedsLookup(Exception):
 
 
 def find_many(tracks, search_many, threshold=87, exact_version=False, log=None, service="",
-              artist_songs_many=None, rounds=1):
+              artist_songs_many=None, rounds=1, between_rounds=None):
     """find_in_catalog for many songs with the lookups batched, picking exactly what one by one would.
     rounds > 1 searches again from scratch for whatever is still unmatched (anghami's results vary
     from call to call); only the last round logs misses"""
     results, pending = [None] * len(tracks), list(range(len(tracks)))
     for r in range(rounds):
+        if r and between_rounds:
+            between_rounds()  # not straight back at the site with the same searches
         last = r == rounds - 1
         found = _find_many_once([tracks[i] for i in pending], search_many, threshold, exact_version,
                                 log if last else None, service, artist_songs_many)
