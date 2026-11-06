@@ -943,6 +943,193 @@ class PlatformPane(ttk.Frame):
 
 # ---------------------------------------------------------------- the tab
 
+class ShortcutsPage(ttk.Frame):
+    """every mouse and keyboard control of the manage tab, as cards of keycaps. it covers the tab
+    while open; Done or Esc goes back"""
+
+    sections = (
+        ("Selecting songs", (
+            (("Click",), "Select a song"),
+            (("Ctrl", "+", "Click"), "Add a song to the selection, or take it out"),
+            (("Shift", "+", "Click"), "Select every song between two"),
+            (("Ctrl", "+", "A"), "Select every song shown"),
+            (("Esc",), "Clear the selection"),
+        )),
+        ("Copying and moving", (
+            (("Drag",), "Copy the selected songs to the playlist you drop them on"),
+            (("Shift", "+", "Drag"), "Move them instead of copying"),
+            (("Ctrl", "+", "C", "then", "Ctrl", "+", "V"), "Copy, then paste into the other song list"),
+            (("Ctrl", "+", "X", "then", "Ctrl", "+", "V"), "Move, then paste into the other song list"),
+        )),
+        ("Reordering", (
+            (("Drag",), "Drag songs up or down within a playlist"),
+            (("Alt", "+", "↑"), "Move the selection up one place"),
+            (("Alt", "+", "↓"), "Move the selection down one place"),
+        )),
+        ("Playlists", (
+            (("Delete",), "Remove the selected songs, or delete the selected playlist"),
+            (("F2",), "Rename the selected playlist"),
+            (("Double-click",), "Open a song in Anghami or Spotify"),
+            (("Right-click",), "Every option for a song or a playlist"),
+        )),
+    )
+    mouse = {"Click", "Drag", "Double-click", "Right-click"}
+    joiners = {"+", "then"}
+    margin, gap, pad = 20, 14, 16  # around the page, between cards, inside a card
+    row_height = 38
+
+    def __init__(self, parent, on_close):
+        super().__init__(parent)
+        self.on_close = on_close
+        self.colors = {"page": "#fafafa", "card": "#ffffff", "fg": "#1c1c1c", "muted": "#6b6b6b",
+                       "border": "#e5e5e5", "accent": "#005fb8", "key": "#f3f3f3", "key_edge": "#d0d0d0",
+                       "key_shadow": "#c4c4c4"}
+        self.title_font = tkfont.Font(family="Segoe UI Variable Display", size=18, weight="bold")
+        self.section_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        self.key_font = tkfont.Font(family="Segoe UI", size=9, weight="bold")
+        self.text_font = tkfont.Font(family="Segoe UI", size=10)
+        self.small_font = tkfont.Font(family="Segoe UI", size=9)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self._scrolled)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.done_btn = ttk.Button(self, text="Done", command=self.on_close)
+        self.canvas.bind("<Configure>", lambda e: self.draw())
+        self.canvas.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
+        self.bind("<Escape>", lambda e: self.on_close())
+        self.canvas.bind("<Escape>", lambda e: self.on_close())
+
+    def _scrolled(self, first, last):
+        # the scrollbar only shows when the cards don't fit
+        if float(first) <= 0 and float(last) >= 1:
+            self.scrollbar.pack_forget()
+        elif not self.scrollbar.winfo_ismapped():
+            self.scrollbar.pack(side="right", fill="y", before=self.canvas)
+        self.scrollbar.set(first, last)
+
+    def set_colors(self, dark, page, card, fg, muted, border, accent):
+        self.colors = {"page": page, "card": card, "fg": fg, "muted": muted, "border": border, "accent": accent,
+                       "key": "#3b3b3b" if dark else "#f4f4f4", "key_edge": "#505050" if dark else "#d2d2d2",
+                       "key_shadow": "#141414" if dark else "#bdbdbd"}
+        self.canvas.configure(bg=page)
+        self.draw()
+
+    # ------------------------------------------------------------ drawing
+
+    def _token_width(self, token):
+        if token in self.joiners:
+            return self.small_font.measure(token)
+        return self.key_font.measure(token) + 20
+
+    def _keys_width(self, keys):
+        return sum(self._token_width(t) for t in keys) + 6 * (len(keys) - 1)
+
+    def _draw_keys(self, x, mid, keys):
+        c, p = self.canvas, self.colors
+        for token in keys:
+            w = self._token_width(token)
+            if token in self.joiners:
+                c.create_text(x + w / 2, mid, text=token, fill=p["muted"], font=self.small_font)
+            elif token in self.mouse:
+                # mouse actions are pills in the accent color, so they read apart from keys
+                self._round_rect(x, mid - 12, x + w, mid + 12, 12, fill="", outline=p["accent"], width=1.5)
+                c.create_text(x + w / 2, mid, text=token, fill=p["accent"], font=self.key_font)
+            else:
+                # a keycap: a darker edge under it, like the key's side
+                self._round_rect(x, mid - 11, x + w, mid + 14, 6, fill=p["key_shadow"], outline="")
+                self._round_rect(x, mid - 12, x + w, mid + 11, 6, fill=p["key"], outline=p["key_edge"], width=1)
+                c.create_text(x + w / 2, mid - 1, text=token, fill=p["fg"], font=self.key_font)
+            x += w + 6
+
+    def _round_rect(self, x0, y0, x1, y1, r, **kw):
+        r = min(r, (x1 - x0) / 2, (y1 - y0) / 2)
+        points = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1, x1 - r, y1,
+                  x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+        return self.canvas.create_polygon(points, smooth=True, splinesteps=12, **kw)
+
+    def _lines(self, text, width):
+        """how many lines tk wraps text into at width: whole words per line, like it does"""
+        lines, line = 1, ""
+        for word in text.split():
+            trial = f"{line} {word}" if line else word
+            if line and self.text_font.measure(trial) > width:
+                lines, line = lines + 1, word
+            else:
+                line = trial
+        return lines
+
+    def _row(self, keys, text, keys_w, inner_w):
+        """how a row sits in a card: (keys on their own line above the text, text width, height)"""
+        stacked = self._keys_width(keys) > keys_w
+        text_w = inner_w if stacked else inner_w - keys_w - 16
+        text_h = self._lines(text, text_w) * self.text_font.metrics("linespace")
+        height = (self.row_height + text_h + 4) if stacked else max(self.row_height, 14 + text_h)
+        return stacked, text_w, height
+
+    def layout(self, width):
+        """where each card goes for a page this wide: [(section, x, y, w, h, key column width)], and
+        the page's height. two columns when they fit, cards placed in whichever column is shorter"""
+        columns = 2 if width >= 720 else 1
+        card_w = (width - 2 * self.margin - (columns - 1) * self.gap) / columns
+        inner_w = card_w - 2 * self.pad
+        # the key column fits the usual rows; a longer one puts its text on the line under its keys
+        widths = [self._keys_width(keys) for _t, rows in self.sections for keys, _d in rows]
+        limit = min(inner_w * 0.45, 170)
+        keys_w = max([w for w in widths if w <= limit] or [limit])
+        top = self.margin + 64  # under the title
+        heights, placed = [top] * columns, []
+        for section in self.sections:
+            title, rows = section
+            body = 0
+            for keys, text in rows:
+                body += self._row(keys, text, keys_w, inner_w)[2]
+            h = self.pad + 24 + body + self.pad / 2
+            col = heights.index(min(heights))
+            x = self.margin + col * (card_w + self.gap)
+            placed.append((section, x, heights[col], card_w, h, keys_w))
+            heights[col] += h + self.gap
+        return placed, max(heights) + self.margin
+
+    def draw(self):
+        c, p = self.canvas, self.colors
+        c.delete("all")
+        width = max(320, c.winfo_width())
+        c.create_text(self.margin, self.margin, text="Shortcuts", anchor="nw", fill=p["fg"], font=self.title_font)
+        c.create_text(self.margin, self.margin + 36, anchor="nw", fill=p["muted"], font=self.text_font,
+                      text="Everything you can do with the mouse and keyboard in the Manage tab.")
+        self.done_btn.place(in_=self, relx=1.0, x=-self.margin - (self.scrollbar.winfo_width()
+                            if self.scrollbar.winfo_ismapped() else 0), y=self.margin, anchor="ne")
+        placed, height = self.layout(width)
+        for (title, rows), x, y, w, h, keys_w in placed:
+            self._round_rect(x, y, x + w, y + h, 10, fill=p["card"], outline=p["border"], width=1)
+            c.create_text(x + self.pad, y + self.pad, text=title.upper(), anchor="nw", fill=p["accent"],
+                          font=self.section_font)
+            ry = y + self.pad + 24
+            inner_w = w - 2 * self.pad
+            for i, (keys, text) in enumerate(rows):
+                stacked, text_w, rh = self._row(keys, text, keys_w, inner_w)
+                if i:
+                    c.create_line(x + self.pad, ry, x + w - self.pad, ry, fill=p["border"])
+                if stacked:
+                    self._draw_keys(x + self.pad, ry + self.row_height / 2, keys)
+                    c.create_text(x + self.pad, ry + self.row_height - 4, text=text, anchor="nw", fill=p["fg"],
+                                  font=self.text_font, width=text_w)
+                else:
+                    mid = ry + rh / 2
+                    self._draw_keys(x + self.pad, mid, keys)
+                    c.create_text(x + self.pad + keys_w + 16, mid, text=text, anchor="w", fill=p["fg"],
+                                  font=self.text_font, width=text_w)
+                ry += rh
+        c.configure(scrollregion=(0, 0, width, height))
+
+    def open(self):
+        self.place(x=0, y=0, relwidth=1, relheight=1)
+        self.lift()
+        self.canvas.yview_moveto(0)
+        self.draw()
+        self.canvas.focus_set()
+
+
 class SearchBox(ttk.Frame):
     def __init__(self, parent, placeholder, on_change):
         super().__init__(parent)
@@ -1015,15 +1202,9 @@ class ManageTab(ttk.Frame):
         self.tip(self.merge_btn, "Add the songs from one playlist to another. Nothing is removed.")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=80)
         self.status_var = tk.StringVar(value="")
-        help_label = ttk.Label(bar, text="ⓘ Shortcuts", style="Muted.TLabel", cursor="question_arrow")
-        help_label.pack(side="right", padx=(8, 0))
-        self.tip(help_label, "Click to select a song. Ctrl+click adds to the selection, Shift+click selects a range.\n"
-                             "Drag songs onto a playlist to copy them. Hold Shift while dropping to move them.\n"
-                             "Ctrl+C or Ctrl+X, then Ctrl+V in a song list, to copy or move songs.\n"
-                             "Drag songs within a playlist, or press Alt+Up / Alt+Down, to reorder them.\n"
-                             "Delete removes the selected songs. Ctrl+A selects all. Esc clears the selection.\n"
-                             "Double-click a song to open it. F2 renames the selected playlist.\n"
-                             "Right-click a song or playlist for more options.", right=True)
+        self.shortcuts_btn = ttk.Button(bar, text="Shortcuts", command=self.show_shortcuts)
+        self.shortcuts_btn.pack(side="right", padx=(8, 0))
+        self.tip(self.shortcuts_btn, "Every mouse and keyboard control (F1)")
         ttk.Label(bar, textvariable=self.status_var, style="Muted.TLabel").pack(side="left", padx=(12, 0))
 
         panes = ttk.PanedWindow(self, orient="horizontal")
@@ -1037,6 +1218,8 @@ class ManageTab(ttk.Frame):
         self.panes["anghami"].configure(padding=(0, 0, 8, 0))
         self.panes["spotify"].configure(padding=(8, 0, 0, 0))
         self.paned = panes
+        self.shortcuts = ShortcutsPage(self, on_close=self.hide_shortcuts)
+        self.bind_all("<F1>", lambda e: self.show_shortcuts() if self.winfo_ismapped() else None, add="+")
         # the divider is dragged as a line and the sides resized once on release: resizing them live
         # repaints every widget in both on each pixel, which is what made dragging it lag
         panes.bind("<ButtonPress-1>", self._sash_press)
@@ -1165,11 +1348,20 @@ class ManageTab(ttk.Frame):
             pane.tree.tag_configure("drop", background=select_bg, foreground=bg)
             pane.tree.tag_configure("on", background=selected_row, font=("Segoe UI", 10, "bold"))
         self.tick_colors = (select_bg, bg)
+        page = self.app._colors.get("bg", "#fafafa") if isinstance(getattr(self.app, "_colors", None), dict) else bg
+        self.shortcuts.set_colors(dark, page=page, card=bg, fg=fg, muted=muted, border=border, accent=select_bg)
         for pane in self.panes.values():
             if pane.items:
                 pane.refresh_images()
         style = ttk.Style(self)
         style.configure("Placeholder.TEntry", foreground=muted)
+
+    def show_shortcuts(self):
+        self._hide_tip()
+        self.shortcuts.open()
+
+    def hide_shortcuts(self):
+        self.shortcuts.place_forget()
 
     def update_pair_button(self):
         ok = all(len(self.panes[p].checked) == 1 for p in platform_order)
