@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/demo.gif" alt="Scrapify demo" width="900">
+  <img src="assets/demo.gif" alt="Scrapify demo" width="860">
 </p>
 
 <h1 align="center">Scrapify</h1>
