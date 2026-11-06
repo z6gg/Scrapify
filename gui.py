@@ -708,6 +708,8 @@ class ScrapifyApp:
         self._tab_row = chrome.px(40)  # until the window is shown and it can be measured
         icon = self._title_icon()
         self._logo = chrome.logo(self.root, icon) if icon is not None else None
+        self._name = chrome.title_text(self.root, app_name)
+        self._name_fit = None  # (room, font, its width), worked out in _do_layout_chrome
         self._caption_buttons = chrome.caption_buttons(self.root)
         # positions come from the real layout, which only exists once the window is on screen
         notebook.bind("<Configure>", lambda e: self._layout_chrome(), add="+")
@@ -751,7 +753,7 @@ class ScrapifyApp:
         else:  # no picture: frozen in place at its size, the older and slower way
             notebook.place(x=x, y=y, width=w, height=h)
         self._frozen_cover = cover
-        for widget in (self._logo, self._caption_buttons):
+        for widget in (self._logo, getattr(self, "_name", None), self._caption_buttons):
             if widget is not None:
                 widget.lift()
         self.root.after(50, self._thaw_after_resizing)
@@ -794,7 +796,14 @@ class ScrapifyApp:
         probe_x = notebook.winfo_width() // 2
         in_tab = [y for y in range(0, tab_row)
                   if str(self.root.tk.call(notebook._w, "identify", "tab", probe_x, y)) != ""]
-        return {"tab_row": tab_row, "in_tab_top": in_tab[0] if in_tab else None, "in_tab_rows": len(in_tab)}
+        tabs_width = 0
+        if in_tab:
+            probe_y = in_tab[len(in_tab) // 2]
+            xs = [x for x in range(0, notebook.winfo_width())
+                  if str(self.root.tk.call(notebook._w, "identify", "tab", x, probe_y)) != ""]
+            tabs_width = xs[-1] - xs[0] + 1 if xs else 0
+        return {"tab_row": tab_row, "in_tab_top": in_tab[0] if in_tab else None, "in_tab_rows": len(in_tab),
+                "tabs_width": tabs_width}
 
     def _do_layout_chrome(self):
         self._layout_pending = False
@@ -803,29 +812,28 @@ class ScrapifyApp:
         tab_row = page.winfo_y()  # where the pages start: the bottom of the tab row
         if tab_row <= 1 or notebook.winfo_width() <= 1:
             return  # not laid out yet
-        size, gap = chrome.px(logo_size), chrome.px(logo_gap)
-        # the tabs sit in the middle of what you see between the logo and the window buttons: the
-        # empty space from the logo's last colored column to the first tab's rounded rectangle is the
-        # same as from the last tab's rectangle to the minimize dash's first. ttk centers them
-        # itself (tabposition n), between margins that only shift that center, so they never depend on
-        # the window's width. restyling the notebook redraws every widget in the window, so it
-        # mustn't happen on each resize step (that was the lag), and a margin worked out from where the
-        # tabs were drawn could push them out of sight after a restore from maximized
+        gap = chrome.px(logo_gap)
+        # two groups mirror each other across the tab row: the window buttons on the right, from the
+        # minimize button's rounded frame to the close button's, and the logo with the app's name on
+        # the left, just as wide and just as far from the window's edge. the tabs are centered on the
+        # window, so they're centered between the two as well. ttk centers them itself (tabposition
+        # n) between equal margins, so they never depend on the window's width; restyling the
+        # notebook redraws every widget in the window, so the margins are set once, not per resize
         inset = max(0, gap - chrome.px(titlebar.button_width - titlebar.pill_width) // 2)
-        width = self.root.winfo_width()
-        logo_right = gap + getattr(self, "_logo_ink_right", size - 1)
-        cell, ink = chrome.px(titlebar.button_width), chrome.px(titlebar.glyph_ink)
-        dash_left = width - inset - self._caption_buttons.winfo_reqwidth() + (cell - ink + 1) // 2
-        left, right = notebook.winfo_x(), width - notebook.winfo_x() - notebook.winfo_width()
-        # tabs centered on (left + L + width - right - R) / 2, wanted on (logo_right + dash_left) / 2
-        shift = (logo_right + 1) - (width - dash_left) - left + right
-        margins = (max(0, shift), max(0, -shift))
-        if margins != getattr(self, "_tab_margins_applied", None):
-            self._tab_margins_applied = margins
-            ttk.Style(self.root).configure("TNotebook", tabmargins=[margins[0], 0, margins[1], 0])
+        pill_inset = (chrome.px(titlebar.button_width) - chrome.px(titlebar.pill_width)) // 2
+        group = self._caption_buttons.winfo_reqwidth() - 2 * pill_inset
+        if getattr(self, "_tab_margins_applied", None) != (0, 0):
+            self._tab_margins_applied = (0, 0)
+            ttk.Style(self.root).configure("TNotebook", tabmargins=[0, 0, 0, 0])
         tabs = getattr(self, "_tab_span", None)
         if tabs is None or tabs["tab_row"] != tab_row:
             tabs = self._tab_span = self._measure_tabs(tab_row)
+        # never so narrow that the centered tabs run into either group
+        if tabs.get("tabs_width"):
+            need = tabs["tabs_width"] + 2 * (gap + group + chrome.px(16))
+            min_w, min_h = self.root.minsize()
+            if min_w < need:
+                self.root.minsize(need, min_h)
         # the tab row ends at the rounded panel the pages sit in
         row_bottom = notebook.winfo_y() + tab_row - getattr(self, "_page_inset", 0)
         self._tab_row = row_bottom
@@ -841,9 +849,35 @@ class ScrapifyApp:
             line = row_bottom / 2
         # pixel rows: something n rows tall is centered on line when its top is line - (n - 1) / 2
         top_for = lambda n: math.floor(line - (n - 1) / 2 + 0.5)
+        size = chrome.px(logo_size)
+        ink_left = getattr(self, "_logo_ink_left", 0)
+        logo_ink = getattr(self, "_logo_ink_right", size - 1) - ink_left + 1
         if self._logo is not None:
-            self._logo.place(x=gap, y=top_for(self._logo.winfo_reqheight()))
+            # its artwork, not its transparent edge, starts at the margin
+            self._logo.place(x=gap - ink_left, y=top_for(self._logo.winfo_reqheight()))
             self._logo.lift()
+        else:
+            logo_ink = 0
+        # the name fills the rest of the left group: the biggest whole pixel size that fits beside
+        # the logo, ending exactly where the group does (a pixel or two left over goes in the gap)
+        room = group - logo_ink - chrome.px(8)
+        if self._name_fit is None or self._name_fit[0] != room:
+            family = ("Segoe UI Variable Display" if "Segoe UI Variable Display" in tkfont.families(self.root)
+                      else "Segoe UI")
+            font = None
+            for px in range(40, 7, -1):
+                trial = tkfont.Font(root=self.root, family=family, size=-px, weight="bold")
+                if trial.measure(app_name) <= room:
+                    font = trial
+                    break
+            font = font or tkfont.Font(root=self.root, family=family, size=-8, weight="bold")
+            self._name.configure(font=font)
+            self._name_fit = (room, font, font.measure(app_name))
+        _room, font, name_w = self._name_fit
+        # its capitals' middle on the line, like the tab labels' letters
+        cap = cap_height_ratio * -int(font.cget("size"))
+        self._name.place(x=gap + group - name_w, y=math.floor(line - font.metrics("ascent") + cap / 2 + 0.5))
+        self._name.lift()
         # the close button's rounded frame ends one gap from the window's edge, like the logo starts
         self._caption_buttons.place(relx=1.0, x=-inset, y=top_for(chrome.px(titlebar.button_height)), anchor="ne")
         self._caption_buttons.lift()
@@ -874,7 +908,8 @@ class ScrapifyApp:
                 image = image.convert("RGBa").resize((size, size), Image.LANCZOS).convert("RGBA")
             ink = image.getchannel("A").getbbox()
             if ink:
-                self._logo_ink_right = ink[2] - 1  # its last colored column, for centering the tabs
+                self._logo_ink_left = ink[0]  # its first colored column, lined up with the window's margin
+                self._logo_ink_right = ink[2] - 1  # and its last
             self._title_icon_image = ImageTk.PhotoImage(image, master=self.root)
         except Exception:
             frames = getattr(self, "_icons", None)
@@ -2754,7 +2789,7 @@ class ScrapifyApp:
         if chrome:
             self.chrome.set_colors(bg=p["chrome"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
             # room for the logo left of the first tab (per theme, so again after every switch)
-            margins = getattr(self, "_tab_margins_applied", None) or (self.chrome.px(logo_size + logo_gap), 0)
+            margins = getattr(self, "_tab_margins_applied", None) or (0, 0)
             self._tab_span = None  # the tabs' size may differ per theme, measured again
             style.configure("TNotebook", tabmargins=[margins[0], 0, margins[1], 0])
             self._rounded_notebook(dark)

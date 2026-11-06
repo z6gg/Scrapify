@@ -142,6 +142,14 @@ class Chrome:
         self.drag_area(text)
         return bar
 
+    def title_text(self, parent, text):
+        """the app's name beside the logo: the title color (dimmed while inactive), moves the window"""
+        label = tk.Label(parent, text=text, bd=0, padx=0, pady=0, highlightthickness=0)
+        self._painted.append(label)
+        self._texts.append(label)
+        self.drag_area(label)
+        return label
+
     def logo(self, parent, image):
         label = tk.Label(parent, image=image, bd=0, padx=0, pady=0, highlightthickness=0)
         self._painted.append(label)
