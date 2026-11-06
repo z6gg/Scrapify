@@ -392,6 +392,19 @@ def run_cases(verbose):
         (T("وين احب الليلة", "محمد عبده", None, 900), T("وين أحب الليلة - لندن 97", "Muhammad Abduh", None, 1187), False),
         (T("ولا على باله", "عمرو دياب"), T("Wala Ala Balo", "Amr Diab"), True),
         (T("ولا على بالك", "عمرو دياب"), T("Wala Ala Balo", "Amr Diab"), False),
+        # one platform has the full title ("ليالي الشمال الحزينة"), the other a short one, 3s apart;
+        # the long cut and another song of a similar name stay apart
+        (T("Layali El Shimal", "Fayrouz", ['Layali El Shimal', 'ليالي الشّمال', 'Fayrouz', 'فيروز'], 199),
+         T("Laialy El Shemal El Hazeena", "Fairuz", None, 196), True),
+        (T("Layali El Shimal", "Fayrouz", ['Layali El Shimal', 'ليالي الشّمال', 'Fayrouz', 'فيروز'], 199),
+         T("Layali El Shimal Al Hazeneh", "Fairuz", None, 616), False),
+        (T("Be3dou El Habayeb", "Fayrouz", ['Be3dou El Habayeb', 'بعدو الحبابيب', 'Fayrouz', 'فيروز'], 257),
+         T("Ya Gabal Elly Baeed - Beado El Habayeb", "Fairuz", None, 322), False),
+        (T("بعدو الحبايب", "فيروز"), T("Ya Gabal Elly Baeed - Beado El Habayeb", "Fairuz"), False),
+        (T("Habbeytak", "Fayrouz", ['Habbeytak', 'حبيتك', 'Fayrouz', 'فيروز'], 324),
+         T("Habbaitak Be El Saif", "Fairuz", None, 212), False),
+        (T("Habbeytak", "Fayrouz", ['Habbeytak', 'حبيتك', 'Fayrouz', 'فيروز'], 324),
+         T("Saaltak Habiby", "Fairuz", None, 327), False),
         # versions and English controls
         (T("Fakra", "Massar Egbari"), T("Fakra  (Anghami Sessions)", "Massar Egbari"), False),
         (T("worry - Slowed", "LONOWN"), T("worry - ultra slowed", "LONOWN"), False),

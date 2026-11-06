@@ -232,10 +232,28 @@ def same_song_probability(a, b, features=None):
     return 1 / (1 + math.exp(-max(-30.0, min(30.0, z))))
 
 
+def _arabic_titles_conflict(a, b):
+    # both have the title in arabic and those disagree: arabic spelling doesn't drift like franco does,
+    # a letter off is another word (ولا على باله / ولا على بالك). one inside the other is no conflict,
+    # one platform often has the longer title (ليالي الشمال / ليالي الشمال الحزينة)
+    xs = [n for n in _names(a, "title") if has_arabic(n)]
+    ys = [n for n in _names(b, "title") if has_arabic(n)]
+    if not xs or not ys:
+        return False
+    for x in xs:
+        for y in ys:
+            wx, wy = set(normalize(_overlap_text(x)).split()), set(normalize(_overlap_text(y)).split())
+            if wx and wy and (wx <= wy or wy <= wx):
+                return False
+    return True
+
+
 def _judge_says_same(a, b, artist_score):
     # a hard rule over the judge: it never overrules the artist. the artists must already agree by
     # the rules, or be one name in two scripts by the spelling model ("Batal El Alam" by Raheem is
     # not Marwan Moussa's, however alike the titles)
+    if _arabic_titles_conflict(a, b):
+        return False
     features = judge_features(a, b)
     artist_cross, artist_spelling = features[5], features[4]
     if artist_score < 87 and not (artist_cross and artist_spelling >= _judge_artist_spelling):

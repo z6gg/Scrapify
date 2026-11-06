@@ -219,6 +219,13 @@ def judge_examples(rec):
         by_title[matcher.skeleton(s["title"]).replace(" ", "")].append(s)
     X, y = [], []
     plain = lambda s: {k: s[k] for k in ("title", "artist", "duration")}
+    # title words to lengthen a title with, per script ({has arabic: words})
+    word_pool = {False: [], True: []}
+    for s in songs:
+        for name in [s["title"]] + list((s.get("aliases") or {}).get("titles") or []):
+            word_pool[matcher.has_arabic(name)] += [w for w in name.split() if len(w) >= 4 and w.isalpha()]
+    for key in word_pool:
+        word_pool[key] = word_pool[key] or ["Song"]
     for s in songs:
         twin = other_script(s)
         if twin is None:
@@ -235,6 +242,13 @@ def judge_examples(rec):
             o2 = other_script(o) or o
             for dur in (s["duration"] + random.uniform(0, 2), o["duration"], None):
                 X.append(features(plain(s), dict(o2, duration=dur))); y.append(0)
+        # one side's title has words the other left out ("ليالي الشمال" listed as "Laialy El Shemal El
+        # Hazeena"): the same song at about the same length, another song (a long cut, a medley, a
+        # longer namesake) when the lengths are far apart
+        extra = random.choice(word_pool[matcher.has_arabic(twin["title"])])
+        longer = dict(twin, title=f"{twin['title']} {extra}")
+        X.append(features(plain(s), dict(longer, duration=s["duration"] + random.uniform(0, 3.5)))); y.append(1)
+        X.append(features(plain(s), dict(longer, duration=s["duration"] + random.choice([-1, 1]) * random.uniform(15, 300)))); y.append(0)
         # the same title by someone else (a cover, or another song of that name)
         namesakes = [o for o in by_title[matcher.skeleton(s["title"]).replace(" ", "")]
                      if not matcher.is_same_artist(o["artist"], s["artist"])]

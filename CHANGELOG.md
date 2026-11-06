@@ -6,6 +6,7 @@
 - Settings > Matching > Judgement: Automatic, or Semi-automatic, where songs Scrapify isn't sure about wait on the Sync tab for a yes or no. Answers are remembered for every later sync
 - Settings > Notifications: one switch for all of them, with "When a sync starts and finishes" and "Ask me when unsure" under it
 - A small built-in model, trained on Spotify and Anghami's own names in both scripts, settles Arabic songs the rules weren't sure of. It runs offline and needs nothing extra
+- A song one platform lists with its full title and the other with a shorter one now matches when their lengths agree (ليالي الشمال = Laialy El Shemal El Hazeena)
 - Arabic names ending in a spoken-vowel ه now match their Latin spelling (محمد عبده = Mohammed Abdu, قالوا نسيته = Qalou Naseto)
 - An Anghami playlist with one unavailable song no longer loses every song's length and Latin name, which made many Arabic songs fail to match
 - Maximizing and then restoring the window no longer hides the tabs or leaves the window buttons stuck, and resizing is much smoother
