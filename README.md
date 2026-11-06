@@ -27,6 +27,8 @@
 - Matches the same song across Arabic, Franco and English names (Arabic/Franco is not 100% accurate)
 - Creates the other playlist on the first sync if you leave its link empty
 - Exclude songs you never want touched
+- A Manage tab to browse both accounts' playlists and copy, move, reorder and merge songs yourself
+- An Activity feed of what happened to every song; in Semi-automatic mode it asks you about songs it isn't sure of
 - Sync on a timer, or in the background with the app closed; pauses while a game or fullscreen app runs
 - Updates itself, light and dark mode
 
@@ -44,7 +46,7 @@ Scrapify isn't signed, so Windows may warn the first time: click **More info > R
 2. Click **Add** and paste a Spotify and an Anghami playlist link.
 3. **Sync** tab: click a direction. The Activity feed shows what happened to every song; hover an icon to see what it means.
 
-Right-click a pair for Edit, Exclude Songs and Remove. Automatic syncs are on the **Automation** tab, everything else on **Settings**.
+Right-click a pair for Edit, Exclude Songs and Remove. The **Manage** tab edits the playlists themselves, on either account. Automatic syncs are on the **Automation** tab, everything else on **Settings**.
 
 > [!WARNING]
 > Syncing searches much faster than a person would. **Settings > Request speed** sets the pace (**Balanced** by default). Faster potentially means higher risk of your account being rate limited or flagged. Consider **Safer** for a big first sync.
