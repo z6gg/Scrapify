@@ -871,7 +871,9 @@ class ScrapifyApp:
         _room, font, name_w = self._name_fit
         # its capitals' middle on the line, like the tab labels' letters
         cap = cap_height_ratio * int(font.cget("size")) * float(self.root.tk.call("tk", "scaling"))
-        self._name.place(x=gap + logo_ink + chrome.px(7),
+        # it ends where the window buttons' width does, measured from the logo, so the tabs have the
+        # same space on both sides
+        self._name.place(x=max(gap + logo_ink + chrome.px(7), gap + group - name_w),
                          y=math.floor(line - font.metrics("ascent") + cap / 2 + 0.5))
         self._name.lift()
         # the close button's rounded frame ends one gap from the window's edge, like the logo starts
