@@ -1090,6 +1090,7 @@ class ManageTab(ttk.Frame):
     def tip(self, widget, text, right=False):
         widget.bind("<Enter>", lambda e: self._show_tip(widget, text, right), add="+")
         widget.bind("<Leave>", lambda e: self._hide_tip(), add="+")
+        widget.bind("<ButtonPress>", lambda e: self._hide_tip(), add="+")  # not over the menu it opens
 
     def _show_tip(self, widget, text, right=False):
         self._hide_tip()
@@ -1138,6 +1139,9 @@ class ManageTab(ttk.Frame):
 
     def on_shown(self):
         """the first time the tab is opened, both lists load"""
+        # tk hands the keyboard to the first entry on a newly shown tab, which hid the search box's
+        # placeholder; nothing here should start out focused
+        self.after(1, lambda: self.focus_set() if isinstance(self.focus_get(), ttk.Entry) else None)
         if self._shown:
             return
         self._shown = True
