@@ -764,6 +764,8 @@ class ScrapifyApp:
         need = self.root.winfo_reqheight()
         if need > height:
             self.root.geometry(f"{width}x{need}")
+        # and never resized shorter than that, which cut the setup tab's bottom row of buttons in half
+        self.root.minsize(640, max(480, need))
 
     def _title_icon(self):
         # the icon's own hand drawn frame when it has one this size, else its biggest one shrunk to
