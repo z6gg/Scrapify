@@ -473,6 +473,41 @@ class BrowserSelectDropdown(_ChecklistDropdown):
         self.menubutton.config(text=f"{text} ▾")
 
 
+class BusyBar(ttk.Progressbar):
+    """the moving bar shown while something is loading, right after the label or button that says
+    what. start() and stop() can overlap (a check and a download, say): it shows until the last stop"""
+
+    def __init__(self, anchor, length=80):
+        super().__init__(anchor.master, mode="indeterminate", length=length)
+        self.anchor = anchor
+        self._count = 0
+
+    def start(self, interval=12):
+        self._count += 1
+        if self._count > 1:
+            return
+        manager = self.anchor.winfo_manager()
+        if manager == "pack":
+            self.pack(side="left", after=self.anchor, padx=(gap_status, 0))
+        elif manager == "grid":
+            info = self.anchor.grid_info()
+            self.grid(row=info["row"], column=int(info["column"]) + int(info.get("columnspan", 1)),
+                      sticky="w", padx=(gap_status, 8))
+        super().start(interval)
+
+    def stop(self):
+        if self._count == 0:
+            return
+        self._count -= 1
+        if self._count:
+            return
+        super().stop()
+        if self.winfo_manager() == "pack":
+            self.pack_forget()
+        elif self.winfo_manager() == "grid":
+            self.grid_remove()
+
+
 class SongChecklist(ttk.LabelFrame):
     # one treeview so long lists show at once. excluded and cached_tracks are changed in place
 
@@ -488,7 +523,9 @@ class SongChecklist(ttk.LabelFrame):
         self.refresh_btn = ttk.Button(top, text="Refresh", command=self.on_refresh)
         self.refresh_btn.pack(side="left")
         self.status_var = tk.StringVar(value="Not loaded yet.")
-        ttk.Label(top, textvariable=self.status_var).pack(side="left", padx=(gap_status, 0))
+        status = ttk.Label(top, textvariable=self.status_var)
+        status.pack(side="left", padx=(gap_status, 0))
+        self.busy = BusyBar(status)
         self.search = managetab.SearchBox(self, "Search songs", self._fill)
         self.search.pack(fill="x", padx=6, pady=(0, 4))
 
@@ -510,12 +547,15 @@ class SongChecklist(ttk.LabelFrame):
     def set_loading(self):
         self.refresh_btn.config(state="disabled")
         self.status_var.set("Loading...")
+        self.busy.start()
 
     def set_error(self, message):
+        self.busy.stop()
         self.refresh_btn.config(state="normal")
         self.status_var.set(message)
 
     def set_tracks(self, tracks, from_cache=False):
+        self.busy.stop()
         self.refresh_btn.config(state="normal")
         self._count_text = f"{len(tracks)} song(s){' (from last refresh)' if from_cache else ''}."
         self.status_var.set(self._count_text)
@@ -1012,6 +1052,7 @@ class ScrapifyApp:
         ttk.Label(box, textvariable=self.chromium_status_var).grid(row=0, column=1, sticky="w", **pad)
         self.chromium_install_btn = ttk.Button(box, text="Install", command=self._install_chromium_clicked)
         self.chromium_install_btn.grid(row=0, column=2, **pad)
+        self.chromium_busy = BusyBar(self.chromium_install_btn)
         self._refresh_chromium_status()
 
         self.session_vars = {p: tk.StringVar() for p in platform_names}
@@ -1028,6 +1069,7 @@ class ScrapifyApp:
         self.get_sessions_btn = ttk.Button(box, text="Get Sessions", command=self._get_sessions_clicked,
                                            style=accent_button)
         self.get_sessions_btn.grid(row=3, column=2, **pad)
+        self.sessions_busy = BusyBar(self.get_sessions_btn)
         ttk.Label(box, text="Note: you only need Get Sessions the first time, or when a sync fails with a login error.",
                   style="Muted.TLabel").grid(row=5, column=0, columnspan=3,
                                                                              sticky="w", padx=8, pady=(0, 4))
@@ -1368,6 +1410,7 @@ class ScrapifyApp:
     def _install_chromium_clicked(self):
         self.chromium_install_btn.config(state="disabled")
         self.chromium_status_var.set("Installing (about 150MB, may take a minute)...")
+        self.chromium_busy.start()
 
         def worker():
             try:
@@ -1377,6 +1420,7 @@ class ScrapifyApp:
                 self.log_queue.put(f"Chromium install failed: {e}")
                 ok = False
             self._ui(self._refresh_chromium_status)
+            self._ui(self.chromium_busy.stop)
             if ok:
                 self._ui(messagebox.showinfo, app_name, "Chromium installed.")
             else:
@@ -1414,6 +1458,7 @@ class ScrapifyApp:
             first = False
             time.sleep(1)  # clicking OK doesn't mean it has finished closing
         self.get_sessions_btn.config(state="disabled")
+        self.sessions_busy.start()
         self.log_queue.put(f"Opening {name} for Spotify and Anghami login...")
         threading.Thread(target=self._get_sessions_worker, args=(key, exe), daemon=True).start()
 
@@ -1441,6 +1486,7 @@ class ScrapifyApp:
             elif outcome == "signed_in":
                 confirmed.append(label)
         self._ui(self.get_sessions_btn.config, {"state": "normal"})
+        self._ui(self.sessions_busy.stop)
         self._ui(self._refresh_session_status)
         missing = [label for label in platform_names.values() if label not in confirmed]
         if not missing:
@@ -1466,7 +1512,9 @@ class ScrapifyApp:
         self.manual_pair_select.pack(side="left")
         self.manual_pair_select.refresh(selected_names=self.config.get("manual_pair_names"))
         self.sync_status_var = tk.StringVar(value="Idle.")
-        ttk.Label(top, textvariable=self.sync_status_var).pack(side="left", padx=(gap_status, 0))
+        sync_status = ttk.Label(top, textvariable=self.sync_status_var)
+        sync_status.pack(side="left", padx=(gap_status, 0))
+        self.sync_busy = BusyBar(sync_status)
 
         head = ttk.Frame(self.sync_tab)
         head.pack(fill="x", padx=8, pady=(0, 4))
@@ -1589,6 +1637,7 @@ class ScrapifyApp:
         label = sync_main.direction_label(direction)
         try:
             self._ui(self.sync_status_var.set, f"Syncing ({label})...")
+            self._ui(self.sync_busy.start)
             for button in self.sync_buttons:
                 self._ui(button.config, {"state": "disabled"})
             self._notify(f"Sync started ({label}).")
@@ -1606,6 +1655,7 @@ class ScrapifyApp:
         finally:
             self.sync_lock.release()
             self._ui(self.sync_status_var.set, "Idle.")
+            self._ui(self.sync_busy.stop)
             for button in self.sync_buttons:
                 self._ui(button.config, {"state": "normal"})
 
@@ -1985,7 +2035,9 @@ class ScrapifyApp:
         self.check_now_btn.pack(side="left")
         self.update_status_var = tk.StringVar(value="" if sysutil.frozen else
                                               "A copy run from source updates with git pull.")
-        ttk.Label(row, textvariable=self.update_status_var, style="Muted.TLabel").pack(side="left", padx=(gap_status, 0))
+        update_status = ttk.Label(row, textvariable=self.update_status_var, style="Muted.TLabel")
+        update_status.pack(side="left", padx=(gap_status, 0))
+        self.update_busy = BusyBar(update_status)
         if not sysutil.frozen:
             check.state(["disabled"])
             self.auto_update_check.state(["disabled"])
@@ -2079,6 +2131,10 @@ class ScrapifyApp:
             self._check_for_updates(quiet=True)
         self.root.after(update_check_interval_ms, self._tick_update_check)
 
+    def _busy_update(self, on):
+        if hasattr(self, "update_busy"):
+            (self.update_busy.start if on else self.update_busy.stop)()
+
     def _set_update_status(self, text):
         if hasattr(self, "update_status_var"):
             self.update_status_var.set(text)
@@ -2099,6 +2155,7 @@ class ScrapifyApp:
         self._checking = True
         self._set_update_status("Checking for updates...")
         self.check_now_btn.state(["disabled"])
+        self.update_busy.start()
 
         def work():
             try:
@@ -2110,6 +2167,7 @@ class ScrapifyApp:
 
         def done(found, error):
             self._checking = False
+            self.update_busy.stop()
             self.check_now_btn.state(["!disabled"])
             stamp = time.strftime("%H:%M")
             if error:
@@ -2366,6 +2424,7 @@ class ScrapifyApp:
         log = logging.getLogger(__name__)
         log.info(f"Downloading Scrapify {found.version} in the background")
         self._set_update_status(f"Downloading Scrapify {found.version}...")
+        self._busy_update(True)
         tracker = _ProgressText(found.version, every=0.5)
 
         def progress(stage, done, total):
@@ -2381,7 +2440,9 @@ class ScrapifyApp:
                 self._ui(self._set_update_status, f"The update to {found.version} didn't download. "
                                                   "It'll try again later.")
                 self._ui(self._abort_update, None)
+                self._ui(self._busy_update, False)
                 return
+            self._ui(self._busy_update, False)
             self._ui(self._auto_ready, found, new_app)
         threading.Thread(target=work, daemon=True).start()
 
