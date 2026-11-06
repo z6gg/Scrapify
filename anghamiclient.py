@@ -54,6 +54,17 @@ def _song(item):
                           "id": str(item["id"]), "duration": _seconds(item.get("duration"))}, item.get("keywords"))
 
 
+def artwork_url(cover_id, size=64):
+    # the player's own image server, webp
+    return f"https://artwork.anghcdn.co/?id={cover_id}&size={size}" if cover_id else ""
+
+
+def _playlist_title(name):
+    # its built in ones are named like $1234567890DOWNLOADED#
+    m = re.fullmatch(r"\$\d+([A-Za-z_]+)#?", name or "")
+    return m.group(1).replace("_", " ").title() if m else (name or "").strip()
+
+
 class AnghamiClient(bsc.BrowserClient):
     session_file = "anghami_session.json"
     service = "Anghami"
@@ -242,7 +253,7 @@ class AnghamiClient(bsc.BrowserClient):
 
     def _decode_song_buffers(self, buffers):
         # an entry is {1: id, 2: song}, a song {1: id, 2: title, 3: album, 5: artist, 9: duration
-        # float32, 14: keywords}. a reissued song has two different ids and songorder uses the
+        # float32, 10: cover art id, 14: keywords}. a reissued song has two different ids and songorder uses the
         # entry's, so both are indexed
         songs = {}
         for blob in buffers or []:
@@ -255,6 +266,7 @@ class AnghamiClient(bsc.BrowserClient):
                 length = song.get(9, [None])[0]
                 info = {"title": text(song, 2), "artist": text(song, 5),
                         "duration": struct.unpack("<f", length)[0] if isinstance(length, bytes) and len(length) == 4 else 0,
+                        "coverArt": text(song, 10) or text(song, 13),
                         "keywords": [k.decode("utf-8", "replace") for k in song.get(14, []) if isinstance(k, bytes)]}
                 for song_id in (text(song, 1), text(entry, 1)):
                     if song_id:
@@ -273,7 +285,8 @@ class AnghamiClient(bsc.BrowserClient):
                 for song in section.get("data") or []:
                     songs.setdefault(str(song.get("id")), song)
         tracks = [_with_aliases({"title": songs[i].get("title", "").strip(), "artist": songs[i].get("artist", "").strip(),
-                                 "id": i, "duration": _seconds(songs[i].get("duration"))}, songs[i].get("keywords"))
+                                 "id": i, "duration": _seconds(songs[i].get("duration")),
+                                 "image": artwork_url(songs[i].get("coverArt"))}, songs[i].get("keywords"))
                   for i in order if i in songs]
         if partial:
             return tracks, len(order) - len(tracks)
@@ -442,7 +455,41 @@ class AnghamiClient(bsc.BrowserClient):
             out[name] = [t for t in songs if not (t["id"] in seen or seen.add(t["id"]))]
         return out
 
+    def list_playlists(self):
+        """the account's playlists: its own (editable) then the ones it follows"""
+        self._open_api()
+        data = self._gateway({"type": "GETplaylists"})
+        out, seen = [], set()
+        for section in data.get("sections") or []:
+            if section.get("name") not in ("playlists", "subscribed", "shared"):
+                continue
+            for p in section.get("data") or []:
+                pid = str(p.get("id") or "")
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                out.append({"platform": "anghami", "id": pid, "name": _playlist_title(p.get("name")),
+                            "url": f"https://play.anghami.com/playlist/{pid}", "count": int(p.get("count") or 0),
+                            "image": artwork_url(p.get("coverArt")), "editable": section.get("name") == "playlists"})
+        return out
+
     # ---------------------------------------------------------------- writing
+
+    def add_exact(self, playlist_url, tracks):
+        """appends songs that are already anghami songs (they carry their id), no searching. returns
+        the ones not confirmed added; ones already in the playlist count as added"""
+        if not tracks:
+            return []
+        playlist_id = self._open_api(playlist_url)
+        already = {t["id"] for t in self._read_playlist_api(playlist_id, partial=True)[0]}
+        new_ids = list(dict.fromkeys(t["id"] for t in tracks if t.get("id") and t["id"] not in already))
+        if new_ids:
+            self._gateway({"type": "PUTplaylist", "playlistid": playlist_id,
+                           "action": "append", "songID": ",".join(new_ids)}, post=True)
+        now = {t["id"] for t in self._read_playlist_api(playlist_id, partial=True)[0]}
+        failed = [t for t in tracks if t.get("id") not in now]
+        self.log.info("Anghami: added %d song(s) by id", len(tracks) - len(failed))
+        return failed
 
     def create_playlist(self, name):
         # private, the same call the player's Create Playlist dialog makes

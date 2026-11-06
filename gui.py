@@ -38,6 +38,7 @@ except ImportError as e:
 
 from main import load_config, save_config
 import activityfeed
+import managetab
 import choices
 import titlebar
 import updater
@@ -488,6 +489,8 @@ class SongChecklist(ttk.LabelFrame):
         self.refresh_btn.pack(side="left")
         self.status_var = tk.StringVar(value="Not loaded yet.")
         ttk.Label(top, textvariable=self.status_var).pack(side="left", padx=(gap_status, 0))
+        self.search = managetab.SearchBox(self, "Search songs", self._fill)
+        self.search.pack(fill="x", padx=6, pady=(0, 4))
 
         box = ttk.Frame(self)
         box.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -514,15 +517,29 @@ class SongChecklist(ttk.LabelFrame):
 
     def set_tracks(self, tracks, from_cache=False):
         self.refresh_btn.config(state="normal")
-        self.status_var.set(f"{len(tracks)} song(s){' (from last refresh)' if from_cache else ''}.")
+        self._count_text = f"{len(tracks)} song(s){' (from last refresh)' if from_cache else ''}."
+        self.status_var.set(self._count_text)
         if not from_cache:
-            self.cached_tracks[:] = tracks
+            # cover art links are only for the manage tab, not worth keeping in config.json
+            self.cached_tracks[:] = [{k: v for k, v in t.items() if k != "image"} for t in tracks]
+        self._fill()
+
+    def _fill(self):
+        query = self.search.query()
         self.tree.delete(*self.tree.get_children())
         self.rows = {}
-        for track in tracks:
+        shown = 0
+        for track in self.cached_tracks:
+            if query and not managetab._matches(managetab._search_text(track), query):
+                continue
+            shown += 1
             label = f"{track['title']} - {track['artist']}" if track.get("artist") else track["title"]
             item = self.tree.insert("", "end", values=(self._mark(track), label))
             self.rows[item] = track
+        if query:
+            self.status_var.set(f"{shown} of {len(self.cached_tracks)} song(s) match.")
+        elif getattr(self, "_count_text", None):
+            self.status_var.set(self._count_text)
 
     def _mark(self, track):
         return "✔" if sync_main.is_excluded(track, self.excluded) else ""
@@ -596,9 +613,13 @@ class ScrapifyApp:
                       lambda e: root.focus_set() if root.focus_get() is notebook else None, add="+")
         self.setup_tab, self.sync_tab = ttk.Frame(notebook), ttk.Frame(notebook)
         self.automation_tab, self.settings_tab = ttk.Frame(notebook), ttk.Frame(notebook)
-        for tab, text in ((self.setup_tab, "Setup"), (self.sync_tab, "Sync"),
+        self._manage_active = 0
+        self.manage = managetab.ManageTab(notebook, self)
+        for tab, text in ((self.setup_tab, "Setup"), (self.sync_tab, "Sync"), (self.manage, "Manage"),
                           (self.automation_tab, "Automation"), (self.settings_tab, "Settings")):
             notebook.add(tab, text=text)
+        notebook.bind("<<NotebookTabChanged>>",
+                      lambda e: self.manage.on_shown() if notebook.select() == str(self.manage) else None, add="+")
         self._build_setup_tab()
         self._build_sync_tab()
         self._build_automation_tab()
@@ -799,6 +820,54 @@ class ScrapifyApp:
             return os.path.getmtime(path)
         except OSError:
             return None
+
+    # ------------------------------------------------------------ manage tab
+
+    accent_style = accent_button
+
+    @property
+    def messages(self):
+        return messagebox  # the themed one once the title bar is ours
+
+    def _manage_begin(self):
+        # manage tab work and syncs take turns, like the exclude list's refreshes
+        with self._busy_guard:
+            if self._manage_active == 0:
+                if self._refreshing or not self.sync_lock.acquire(blocking=False):
+                    return False
+            self._manage_active += 1
+            return True
+
+    def _manage_end(self):
+        with self._busy_guard:
+            self._manage_active -= 1
+            if self._manage_active == 0:
+                self.sync_lock.release()
+
+    def _pair_from_playlists(self, anghami, spotify):
+        """a sync pair from a playlist on each side, picked on the manage tab"""
+        for pair in self.config["playlist_pairs"]:
+            if (pair.get("anghami_playlist_url") == anghami["url"] and pair.get("spotify_playlist_url") == spotify["url"]):
+                messagebox.showinfo(app_name, f"Those two are already the pair {pair['name']}.")
+                return None
+        name = anghami["name"] if anghami["name"] == spotify["name"] else f"{anghami['name']} / {spotify['name']}"
+        taken = {p["name"] for p in self.config["playlist_pairs"]}
+        base, n = name, 2
+        while name in taken:
+            name, n = f"{base} ({n})", n + 1
+        pair = self._pair_dialog({"name": name, "anghami_playlist_url": anghami["url"],
+                                  "spotify_playlist_url": spotify["url"]}, title="Add playlist pair")
+        if pair:
+            self.config["playlist_pairs"].append(pair)
+            self._save_config()
+            self._reload_pairs_tree()
+        return pair
+
+    def _manage_session_problem(self, platform):
+        label = platform_names[platform]
+        if label in sync_main.missing_sessions(self.config):
+            return f"Not logged in to {label} (or the session expired).\nUse Get Sessions on the Setup tab first."
+        return None
 
     def _save_config(self):
         save_config(self.config)
@@ -1004,10 +1073,10 @@ class ScrapifyApp:
             return None
         return self.pairs_tree.index(selection[0])
 
-    def _pair_dialog(self, initial=None):
+    def _pair_dialog(self, initial=None, title=None):
         initial = initial or {}
         dialog = tk.Toplevel(self.root)
-        dialog.title("Edit playlist pair" if initial else "Add playlist pair")
+        dialog.title(title or ("Edit playlist pair" if initial else "Add playlist pair"))
         dialog.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
         self._decorate(dialog, dialog.title())
         dialog.transient(self.root)
@@ -1152,7 +1221,7 @@ class ScrapifyApp:
         win.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
         self._decorate(win, win.title())
         win.transient(self.root)
-        win.geometry("760x500")
+        win.geometry("760x560")
         win.grab_set()
         panels = ttk.Frame(win)
         panels.pack(fill="both", expand=True, padx=8, pady=8)
@@ -2572,6 +2641,8 @@ class ScrapifyApp:
         style.configure("TLabelframe.Label", font=("Segoe UI Variable Text", 10, "bold"))
         self.feed.set_colors(dark, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
                              select_bg=p["select_bg"])
+        self.manage.set_colors(dark, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
+                               select_bg=p["select_bg"])
         for canvas in self._theme_canvases:
             canvas.configure(bg=p["bg"])
         if chrome:
@@ -2710,6 +2781,8 @@ class ScrapifyApp:
             style.configure("Muted.TLabel", foreground=muted_gray)
             self.feed.set_colors(False, bg="SystemWindow", fg="SystemWindowText", muted=muted_gray,
                                  border="SystemButtonShadow", select_bg="SystemHighlight")
+            self.manage.set_colors(False, bg="#ffffff", fg="#1c1c1c", muted=muted_gray, border="#d9d9d9",
+                                   select_bg="#0078d4")
             return
         # windows' native themes ignore color overrides, clam honors them
         p = dark_colors
@@ -2740,6 +2813,8 @@ class ScrapifyApp:
                         bordercolor=p["border"], lightcolor=p["select_bg"], darkcolor=p["select_bg"])
         self.feed.set_colors(True, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
                              select_bg=p["select_bg"])
+        self.manage.set_colors(True, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
+                               select_bg=p["select_bg"])
         for canvas in self._theme_canvases:
             canvas.configure(bg=p["bg"])
 
@@ -2867,6 +2942,7 @@ class ScrapifyApp:
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Couldn't install the update on quit: {e}")
         self.auto_stop.set()
+        self.manage.stop()
         if self.tray_icon is not None:
             try:
                 self.tray_icon.stop()

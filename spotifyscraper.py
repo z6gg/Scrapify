@@ -43,6 +43,11 @@ def _mark_failed(details, tracks, message):
         info["error"] = message
 
 
+def _smallest_image(sources):
+    sources = [s for s in sources or [] if s.get("url")]
+    return min(sources, key=lambda s: s.get("width") or 9999)["url"] if sources else ""
+
+
 def playlist_id_of(playlist_url):
     m = re.search(r"/playlist/([A-Za-z0-9]+)", playlist_url or "")
     return m.group(1) if m else None
@@ -62,6 +67,7 @@ class SpotifyScraper(bsc.BrowserClient):
         self._playlist_template = None  # its fetchPlaylist request, replayed for any playlist
         self._playlist_names = {}
         self._light_page = None
+        self._library_template = None  # its libraryV3 request, for listing playlists
 
     def __enter__(self):
         super().__enter__()
@@ -177,6 +183,7 @@ class SpotifyScraper(bsc.BrowserClient):
                 "uri": data.get("uri", ""),
                 "uid": item.get("uid", ""),
                 "duration": ((data.get("trackDuration") or {}).get("totalMilliseconds") or 0) / 1000,
+                "image": _smallest_image(((data.get("albumOfTrack") or {}).get("coverArt") or {}).get("sources")),
             })
         if skipped:
             self.log.info("Spotify playlist: skipped %d item(s) that aren't playable songs (podcasts or removed songs).", skipped)
@@ -273,6 +280,51 @@ class SpotifyScraper(bsc.BrowserClient):
                 return page.title().split(" - playlist")[0].split(" | Spotify")[0].strip()
         finally:
             page.close()
+
+    def list_playlists(self):
+        """the playlists in the account's library, folders flattened. editable is whether this
+        account can change its songs (its own, or a collaborative one)"""
+        template = self._library_template
+        if template is None:
+            page = self._context.new_page()
+            try:
+                with page.expect_request(lambda r: "pathfinder" in r.url and '"libraryV3"' in (r.post_data or ""),
+                                         timeout=self._t(30000)) as info:
+                    page.goto("https://open.spotify.com/", wait_until="domcontentloaded")
+                self._remember_api(info.value)
+                template = self._library_template = json.loads(info.value.post_data)
+            finally:
+                page.close()
+        limit = 50
+
+        def body(offset):
+            b = copy.deepcopy(template)
+            b["variables"].update(offset=offset, limit=limit, flatten=True, expandedFolders=[], folderUri=None,
+                                  textFilter="", filters=["Playlists"])
+            return b
+
+        first = self._api_post(body(0))["data"]["me"]["libraryV3"]
+        pages = [first]
+        total = first.get("totalCount") or 0
+        if total > limit:
+            pages += [r["data"]["me"]["libraryV3"] for r in self._api_post_many([body(o) for o in range(limit, total, limit)])
+                      if r and (r.get("data") or {}).get("me")]
+        out, seen = [], set()
+        for page_data in pages:
+            for entry in page_data.get("items") or []:
+                data = (entry.get("item") or {}).get("data") or {}
+                if data.get("__typename") != "Playlist" or not data.get("uri"):
+                    continue
+                pid = data["uri"].rsplit(":", 1)[-1]
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                images = (data.get("images") or {}).get("items") or [{}]
+                out.append({"platform": "spotify", "id": pid, "name": (data.get("name") or "").strip(),
+                            "url": f"https://open.spotify.com/playlist/{pid}", "count": None,
+                            "image": _smallest_image(images[0].get("sources")),
+                            "editable": bool((data.get("currentUserCapabilities") or {}).get("canEditItems"))})
+        return out
 
     # -------------------------------------------------------------- api calls
 
@@ -509,6 +561,34 @@ class SpotifyScraper(bsc.BrowserClient):
                                  extra={"feed": False})
                 failed.append(t)
         return failed
+
+    def add_exact(self, playlist_url, tracks):
+        """adds songs that are already spotify songs (they carry their uri), no searching. returns the
+        ones not confirmed added; ones already in the playlist count as added"""
+        if not tracks:
+            return []
+        current = {t["uri"] for t in self.get_playlist_tracks(playlist_url)}
+        uris = list(dict.fromkeys(t["uri"] for t in tracks if t.get("uri") and t["uri"] not in current))
+        if uris:
+            for start in range(0, len(uris), 100):
+                self._api_call("addToPlaylist", {
+                    "playlistUri": f"spotify:playlist:{playlist_id_of(playlist_url)}",
+                    "playlistItemUris": uris[start:start + 100],
+                    "newPosition": {"moveType": "BOTTOM_OF_PLAYLIST", "fromUid": None},
+                    "interactionId": None,
+                })
+            current = {t["uri"] for t in self.get_playlist_tracks(playlist_url)}
+        failed = [t for t in tracks if t.get("uri") not in current]
+        self.log.info("Spotify: added %d song(s) by uri", len(tracks) - len(failed))
+        return failed
+
+    def move_tracks(self, playlist_url, uids, before_uid=None):
+        """moves playlist items (by uid) to just before before_uid, or to the end without one"""
+        position = ({"moveType": "BEFORE_UID", "fromUid": before_uid} if before_uid
+                    else {"moveType": "BOTTOM_OF_PLAYLIST", "fromUid": None})
+        self._api_call("moveItemsInPlaylist", {"playlistUri": f"spotify:playlist:{playlist_id_of(playlist_url)}",
+                                               "uids": list(uids), "newPosition": position})
+        return self.get_playlist_tracks(playlist_url)
 
     def remove_tracks(self, playlist_url, tracks, threshold=87):
         """removes by playlist item uid in one call, checks with one re-read. returns what's still there"""
