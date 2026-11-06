@@ -813,10 +813,8 @@ class ScrapifyApp:
         if tab_row <= 1 or notebook.winfo_width() <= 1:
             return  # not laid out yet
         gap = chrome.px(logo_gap)
-        # two groups mirror each other across the tab row: the window buttons on the right, from the
-        # minimize button's rounded frame to the close button's, and the logo with the app's name on
-        # the left, just as wide and just as far from the window's edge. the tabs are centered on the
-        # window, so they're centered between the two as well. ttk centers them itself (tabposition
+        # the logo starts as far from the window's left edge as the close button's rounded frame ends
+        # from its right edge, and the tabs are centered on the window. ttk centers them itself (tabposition
         # n) between equal margins, so they never depend on the window's width; restyling the
         # notebook redraws every widget in the window, so the margins are set once, not per resize
         inset = max(0, gap - chrome.px(titlebar.button_width - titlebar.pill_width) // 2)
@@ -858,25 +856,23 @@ class ScrapifyApp:
             self._logo.lift()
         else:
             logo_ink = 0
-        # the name fills the rest of the left group: the biggest whole pixel size that fits beside
-        # the logo, ending exactly where the group does (a pixel or two left over goes in the gap)
-        room = group - logo_ink - chrome.px(8)
-        if self._name_fit is None or self._name_fit[0] != room:
-            family = ("Segoe UI Variable Display" if "Segoe UI Variable Display" in tkfont.families(self.root)
-                      else "Segoe UI")
-            font = None
-            for px in range(40, 7, -1):
-                trial = tkfont.Font(root=self.root, family=family, size=-px, weight="bold")
-                if trial.measure(app_name) <= room:
-                    font = trial
-                    break
-            font = font or tkfont.Font(root=self.root, family=family, size=-8, weight="bold")
+        # the name beside the logo, in semibold one point above the tab labels, like a window title
+        if self._name_fit is None:
+            families = tkfont.families(self.root)
+            family = next((f for f in ("Segoe UI Variable Display Semib", "Segoe UI Semibold") if f in families),
+                          "Segoe UI")
+            try:
+                body = int(tkfont.nametofont("SunValleyBodyFont").actual("size"))
+            except tk.TclError:
+                body = 10
+            font = tkfont.Font(root=self.root, family=family, size=body + 1)
             self._name.configure(font=font)
-            self._name_fit = (room, font, font.measure(app_name))
+            self._name_fit = (None, font, font.measure(app_name))
         _room, font, name_w = self._name_fit
         # its capitals' middle on the line, like the tab labels' letters
-        cap = cap_height_ratio * -int(font.cget("size"))
-        self._name.place(x=gap + group - name_w, y=math.floor(line - font.metrics("ascent") + cap / 2 + 0.5))
+        cap = cap_height_ratio * int(font.cget("size")) * float(self.root.tk.call("tk", "scaling"))
+        self._name.place(x=gap + logo_ink + chrome.px(7),
+                         y=math.floor(line - font.metrics("ascent") + cap / 2 + 0.5))
         self._name.lift()
         # the close button's rounded frame ends one gap from the window's edge, like the logo starts
         self._caption_buttons.place(relx=1.0, x=-inset, y=top_for(chrome.px(titlebar.button_height)), anchor="ne")

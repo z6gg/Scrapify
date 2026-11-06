@@ -556,8 +556,11 @@ class PlatformPane(ttk.Frame):
         self.song_search = tab.search_box(songs_head, "Search songs", self._song_query)
         self.song_search.pack(side="left", fill="x", expand=True)
         self.selection_var = tk.StringVar(value="")
-        ttk.Label(songs_head, textvariable=self.selection_var, style="Muted.TLabel",
-                  anchor="e").pack(side="right", padx=(8, 0))
+        selection_label = ttk.Label(songs_head, textvariable=self.selection_var, style="Muted.TLabel", anchor="e")
+        selection_label.pack(side="right")
+        # its gap only while it says something, so the search box lines up with the one above it
+        self.selection_var.trace_add("write", lambda *_: selection_label.pack_configure(
+            padx=(8, 0) if self.selection_var.get() else 0))
 
         self.songs = SongList(self, tab.thumbs, on_selection=self._selection_changed, on_context=self._song_menu,
                               on_drop=self._drop, on_delete=self.remove_selected, on_key=self._key,
