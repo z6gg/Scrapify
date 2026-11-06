@@ -22,6 +22,7 @@ sysutil.use_data_dir()
 from playwright.sync_api import sync_playwright
 
 import browsersessioncommon as bsc
+import choices
 from anghamiclient import AnghamiClient
 from matcher import match_pairs, pair_tracks, track_key
 from browsersessioncommon import AuthError, PlaylistNotFoundError
@@ -60,6 +61,10 @@ if sys.stderr is not None:
     _handlers.append(logging.StreamHandler())
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", handlers=_handlers)
 log = logging.getLogger("main")
+# what the window's activity feed shows: one record per pair with every song's outcome. not written
+# to sync.log, which keeps its own lines
+activity = logging.getLogger("scrapify.activity")
+activity.propagate = False
 
 config_file = "config.json"
 pid_file = "scrapify_autosync.pid"
@@ -79,7 +84,10 @@ default_config = {
     "show_browser": False,
     "debug_dumps": False,
     "sync_timeout_multiplier": 1.0,
-    "notifications_enabled": False,
+    "notifications": True,  # every notification
+    "notifications_enabled": True,  # sync started and finished
+    "ask_notifications": True,  # semi-automatic matching found songs to ask about
+    "match_mode": "automatic",  # or "semi": unsure songs wait for a yes or no
     **{f"opt_{key}": on for key, on in bsc.default_browser_flags.items()},
 }
 
@@ -153,37 +161,99 @@ def is_excluded(track, excluded):
     return bool(excluded) and any(k in excluded for k in exclusion_keys(track))
 
 
-def diff_and_apply(pair_name, source_tracks, dest_tracks, dest_client, threshold, dest_url, dest_label, dry_run=False):
+def _emit(kind, **data):
+    activity.info(kind, extra={"activity": {"kind": kind, "time": time.time(), **data}})
+
+
+def _brief(track):
+    return {k: track[k] for k in ("title", "artist", "duration") if track.get(k)} if track else None
+
+
+def _row(status, track, match=None, note=None, **extra):
+    return {"status": status, "title": track.get("title", ""), "artist": track.get("artist", ""),
+            "duration": track.get("duration"), "match": _brief(match), "note": note, **extra}
+
+
+def diff_and_apply(pair_name, source_tracks, dest_tracks, dest_client, threshold, dest_url, dest_label, dry_run=False,
+                   mode="automatic", source_label=""):
+    """returns the songs' outcomes, for the activity feed"""
     to_add, to_remove = pair_tracks(source_tracks, dest_tracks, threshold)
     # another version of the same song (live vs studio) is only swapped when the exact one exists,
     # or every sync would remove the close one and fail to add the exact one
     swaps, to_add, to_remove = match_pairs(to_add, to_remove, threshold, versions=False)
     log.info("[%s] +%s: %d, -%s: %d, version swaps to try: %d",
              pair_name, dest_label, len(to_add), dest_label, len(to_remove), len(swaps))
-
-    if dry_run:
-        for t in to_add:
-            log.info("[%s] would add: %s - %s", pair_name, t["title"], t["artist"])
-        for t in to_remove:
-            log.info("[%s] would remove: %s - %s", pair_name, t["title"], t["artist"])
-        for s, d in swaps:
-            log.info("[%s] would swap '%s' for '%s - %s' if that exact version exists",
-                     pair_name, d["title"], s["title"], s["artist"])
-        return
+    data = choices.load()
+    known, rejected = choices.known(dest_label, data), choices.rejected(dest_label, data)
+    rows, questions = [], 0
 
     if swaps:
-        failed = {id(t) for t in dest_client.add_tracks(dest_url, [s for s, _d in swaps], threshold, exact_version=True)}
-        for s, d in swaps:
+        swap_src = [s for s, _d in swaps]
+        details = []
+        if dry_run:
+            hits = dest_client.find_tracks(dest_url, swap_src, threshold, True, details, known, rejected)
+            failed = {id(t) for t, hit in zip(swap_src, hits) if not hit}
+        else:
+            failed = {id(t) for t in dest_client.add_tracks(dest_url, swap_src, threshold, True, details, known, rejected)}
+        for (s, d), info in zip(swaps, details + [{}] * (len(swaps) - len(details))):
             if id(s) in failed:
                 log.info("[%s] Kept '%s - %s' on %s as the closest version of '%s - %s'",
                          pair_name, d["title"], d["artist"], dest_label, s["title"], s["artist"])
+                rows.append(_row("kept", s, d, f"Only a different version is on {dest_label}, kept it"))
             else:
-                to_remove.append(d)
+                if not dry_run:
+                    to_remove.append(d)
+                rows.append(_row("added", s, info.get("hit"), f"Replaced '{d['title']}' with the exact version"))
 
-    for t in dest_client.add_tracks(dest_url, to_add, threshold):
-        log.warning("[%s] Couldn't add on %s: %s - %s", pair_name, dest_label, t["title"], t["artist"])
-    for t in dest_client.remove_tracks(dest_url, to_remove, threshold):
-        log.warning("[%s] Couldn't remove from %s: %s - %s", pair_name, dest_label, t["title"], t["artist"])
+    details = []
+    if dry_run:
+        hits = dest_client.find_tracks(dest_url, to_add, threshold, False, details, known, rejected) if to_add else []
+        failed_ids = {id(t) for t, hit in zip(to_add, hits) if not hit}
+    else:
+        failed = dest_client.add_tracks(dest_url, to_add, threshold, False, details, known, rejected)
+        failed_ids = {id(t) for t in failed}
+        for t in failed:
+            log.warning("[%s] Couldn't add on %s: %s - %s", pair_name, dest_label, t["title"], t["artist"],
+                        extra={"feed": False})
+    details += [{}] * (len(to_add) - len(details))
+    for t, info in zip(to_add, details):
+        hit, closest = info.get("hit"), info.get("closest")
+        if info.get("error"):
+            rows.append(_row("error", t, hit, info["error"]))
+        elif hit and id(t) not in failed_ids:
+            if info.get("same_version", True):
+                rows.append(_row("added", t, hit, "Your earlier answer" if info.get("remembered") else None))
+            else:
+                rows.append(_row("version", t, hit, f"Only a different version is on {dest_label}"))
+        elif mode == "semi" and info.get("unsure") and closest:
+            if not dry_run and choices.add_pending(pair_name, dest_label, t, closest, info.get("score")):
+                questions += 1
+            rows.append(_row("unsure", t, closest, "Is this the same song? Answer at the top of the feed"))
+        else:
+            rows.append(_row("missing", t, closest if info.get("score", 0) >= 40 else None,
+                             f"Possibly not on {dest_label}"))
+
+    if to_remove:
+        if dry_run:
+            still = set()
+        else:
+            still_tracks = dest_client.remove_tracks(dest_url, to_remove, threshold)
+            still = {id(t) for t in still_tracks}
+            for t in still_tracks:
+                log.warning("[%s] Couldn't remove from %s: %s - %s", pair_name, dest_label, t["title"], t["artist"],
+                            extra={"feed": False})
+        for t in to_remove:
+            if id(t) in still:
+                rows.append(_row("error", t, None, f"Couldn't remove it from {dest_label}"))
+            else:
+                rows.append(_row("removed", t, None, None))
+
+    if dry_run:
+        for row in rows:
+            verb = {"added": "add", "version": "add another version of", "kept": "keep the other version of",
+                    "unsure": "ask about", "missing": "not find", "removed": "remove", "error": "fail on"}[row["status"]]
+            log.info("[%s] would %s: %s - %s", pair_name, verb, row["title"], row["artist"])
+    return rows, questions
 
 
 def _save_new_link(pair_name, platform, url):
@@ -232,7 +302,7 @@ def _create_missing_playlist(pair, clients, confirm_create, summary, dry_run):
     pair[f"{target}_playlist_url"] = url
     _save_new_link(name, target, url)
     summary["created"].append({"pair": name, "platform": label, "title": title})
-    log.info("[%s] Created %s playlist '%s'.", name, label, title)
+    log.info("[%s] Created %s playlist '%s'.", name, label, title, extra={"feed": True})
     return f"{source}_to_{target}"
 
 
@@ -244,6 +314,7 @@ def _sync_pair(pair, direction, clients, config, summary, dry_run, confirm_creat
             return
     source, dest = directions[direction]
     log.info("Syncing pair: %s (%s)", name, direction_label(direction))
+    _emit("pair_start", pair=name, source=platform_names[source], dest=platform_names[dest], dry_run=dry_run)
     retries = max(0, int(config.get("retry_attempts", 2)))
     for attempt in range(retries + 1):
         try:
@@ -255,30 +326,41 @@ def _sync_pair(pair, direction, clients, config, summary, dry_run, confirm_creat
             if not tracks[source]:
                 # an empty read is far more likely a failed scrape than a playlist someone emptied
                 log.error("[%s] %s read back 0 songs, likely a failed read. Skipping this pair this run.",
-                          name, platform_names[source])
+                          name, platform_names[source], extra={"feed": False})
+                _emit("pair_end", pair=name, error=f"{platform_names[source]} read back no songs, so this pair "
+                                                   "was skipped. Probably a failed read; it's tried again next sync.")
                 return
-            diff_and_apply(name, tracks[source], tracks[dest], clients[dest], config.get("match_threshold", 87),
-                           pair[f"{dest}_playlist_url"], platform_names[dest], dry_run)
+            rows, questions = diff_and_apply(
+                name, tracks[source], tracks[dest], clients[dest], config.get("match_threshold", 87),
+                pair[f"{dest}_playlist_url"], platform_names[dest], dry_run,
+                config.get("match_mode", "automatic"), platform_names[source])
+            summary["questions"] = summary.get("questions", 0) + questions
+            _emit("pair_end", pair=name, songs=rows, total=len(tracks[source]))
             return
         except AuthError as e:
-            log.error("[%s] Auth problem: %s", name, e)
+            log.error("[%s] Auth problem: %s", name, e, extra={"feed": False})
             summary["errors"].append({"pair": name, "type": "auth", "message": str(e)})
+            _emit("pair_end", pair=name, error=f"Login problem: {e}")
             return
         except PlaylistNotFoundError as e:
-            log.error("[%s] Invalid playlist link: %s", name, e)
+            log.error("[%s] Invalid playlist link: %s", name, e, extra={"feed": False})
             summary["errors"].append({"pair": name, "type": "invalid_link", "message": str(e)})
+            _emit("pair_end", pair=name, error=f"Invalid playlist link: {e}")
             return
         except bsc.RateLimitedError as e:
             # not retried, and the run stops: every pair would hit the same limit
-            log.error("[%s] %s", name, e)
+            log.error("[%s] %s", name, e, extra={"feed": False})
             summary["errors"].append({"pair": name, "type": "rate_limited", "message": str(e)})
+            _emit("pair_end", pair=name, error=str(e))
             raise
         except Exception as e:
             if attempt < retries:
-                log.warning("[%s] Sync attempt %d failed, retrying: %s", name, attempt + 1, e)
+                log.warning("[%s] Sync attempt %d failed, retrying: %s", name, attempt + 1, e, extra={"feed": False})
+                _emit("pair_note", pair=name, note=f"Attempt {attempt + 1} failed, trying again")
                 continue
-            log.exception("Sync failed for pair %s after %d attempt(s): %s", name, attempt + 1, e)
+            log.exception("Sync failed for pair %s after %d attempt(s): %s", name, attempt + 1, e, extra={"feed": False})
             summary["errors"].append({"pair": name, "type": "other", "message": str(e)})
+            _emit("pair_end", pair=name, error=f"Sync failed after {attempt + 1} attempt(s): {e}")
 
 
 def main(direction=None, pair_names=None, dry_run=False, confirm_create=None):
@@ -292,10 +374,12 @@ def main(direction=None, pair_names=None, dry_run=False, confirm_create=None):
         log.warning("Another sync is already running, skipping this one.")
         summary["busy"] = True
         return summary
+    _emit("run_start", dry_run=dry_run)
     try:
         _run(summary, direction, pair_names, dry_run, confirm_create)
     finally:
         lock.release()
+        _emit("run_end", questions=summary.get("questions", 0))
     return summary
 
 

@@ -42,7 +42,7 @@ Scrapify isn't signed, so Windows may warn the first time: click **More info > R
 
 1. **Setup** tab: pick your browser and click **Get Sessions**, log into Spotify and Anghami in the window that opens, then click OK. Needed once, or again if a sync says your login expired.
 2. Click **Add** and paste a Spotify and an Anghami playlist link.
-3. **Sync** tab: click a direction. The log shows what changed.
+3. **Sync** tab: click a direction. The Activity feed shows what happened to every song; hover an icon to see what it means.
 
 Right-click a pair for Edit, Exclude Songs and Remove. Automatic syncs are on the **Automation** tab, everything else on **Settings**.
 

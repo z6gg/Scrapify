@@ -12,7 +12,8 @@ frozen = getattr(sys, "frozen", False)
 
 # what scrapify writes about the person using it. none of it belongs in the app folder
 user_files = ["config.json", "scrapify_settings.json", "spotify_session.json", "anghami_session.json",
-              "browser_paths.json", "anghami_playlist_ids.json", "spotify_search_template.json", "sync.log"]
+              "browser_paths.json", "anghami_playlist_ids.json", "spotify_search_template.json", "sync.log",
+              "match_choices.json"]
 
 
 def app_dir():

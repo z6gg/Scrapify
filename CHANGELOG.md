@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The Sync tab's log is now an Activity feed: a card per playlist pair with a one-line summary and every song's outcome (added, other version, possibly missing, needs your answer, removed, failed). Hover an icon to see what it means. Settings > Open Sync Log still has the full detail
+- Settings > Matching > Judgement: Automatic, or Semi-automatic, where songs Scrapify isn't sure about wait on the Sync tab for a yes or no. Answers are remembered for every later sync
+- Settings > Notifications: one switch for all of them, with "When a sync starts and finishes" and "Ask me when unsure" under it
+- A small built-in model, trained on Spotify and Anghami's own names in both scripts, settles Arabic songs the rules weren't sure of. It runs offline and needs nothing extra
+- Arabic names ending in a spoken-vowel ه now match their Latin spelling (محمد عبده = Mohammed Abdu, قالوا نسيته = Qalou Naseto)
+- An Anghami playlist with one unavailable song no longer loses every song's length and Latin name, which made many Arabic songs fail to match
+- Maximizing and then restoring the window no longer hides the tabs or leaves the window buttons stuck, and resizing is much smoother
+
 ## 1.3.3
 
 - Settings > Request speed: Safer, Balanced (the default) or Fast. Syncs no longer send as many requests as possible at once

@@ -37,6 +37,8 @@ except ImportError as e:
     sys.exit(1)
 
 from main import load_config, save_config
+import activityfeed
+import choices
 import titlebar
 import updater
 import windhawk
@@ -330,13 +332,15 @@ def _time_left(seconds):
 # ------------------------------------------------------------------ widgets
 
 class QueueLogHandler(logging.Handler):
+    # the record itself goes to the window, which picks what the activity feed shows
 
     def __init__(self, q):
         super().__init__()
         self.q = q
 
     def emit(self, record):
-        self.q.put(self.format(record))
+        record.feed_text = record.getMessage()
+        self.q.put(record)
 
 
 class _ChecklistDropdown(ttk.Frame):
@@ -611,9 +615,9 @@ class ScrapifyApp:
         self._fit_window()
 
         handler = QueueLogHandler(self.log_queue)
-        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         logging.getLogger().addHandler(handler)
         logging.getLogger().setLevel(logging.INFO)
+        logging.getLogger("scrapify.activity").addHandler(handler)  # the feed's cards, not in sync.log
 
         self.root.after(150, self._poll_log_queue)
         self.root.after(1000, self._tick_automation_status)
@@ -646,6 +650,7 @@ class ScrapifyApp:
         self._caption_buttons = chrome.caption_buttons(self.root)
         # positions come from the real layout, which only exists once the window is on screen
         notebook.bind("<Configure>", lambda e: self._layout_chrome(), add="+")
+        self.root.bind("<Configure>", self._freeze_while_resizing, add="+")
         # the empty bit of the tab row, and the window's margin beside it, move the window
         def empty_tab_row(event):
             return (event.widget is notebook and event.y < self._tab_row
@@ -657,6 +662,50 @@ class ScrapifyApp:
         self._apply_theme(self.settings.get("dark_mode", False))  # the tab margin and the new pieces' colors
 
     def _layout_chrome(self):
+        # every resize step sends a <Configure>; laid out once per idle turn, not once per event
+        if not getattr(self, "_layout_pending", False):
+            self._layout_pending = True
+            self.root.after_idle(self._do_layout_chrome)
+
+    def _freeze_while_resizing(self, event):
+        # while an edge is dragged the pages keep their size and are laid out once on release: every
+        # sun valley widget redraws on each step otherwise, which is what made resizing lag. the
+        # window's grey shows in the new space meanwhile, like browsers do
+        if event.widget is not self.root:
+            return
+        size, self._root_size = getattr(self, "_root_size", None), (event.width, event.height)
+        if size == self._root_size or not self.chrome.sizing or getattr(self, "_frozen", None):
+            return  # moved, not resized
+        notebook = self.notebook
+        if not notebook.winfo_ismapped():
+            return
+        self._frozen = notebook.pack_info()
+        x, y, w, h = notebook.winfo_x(), notebook.winfo_y(), notebook.winfo_width(), notebook.winfo_height()
+        notebook.pack_forget()
+        notebook.place(x=x, y=y, width=w, height=h)
+        self.root.after(50, self._thaw_after_resizing)
+
+    def _thaw_after_resizing(self):
+        if self.chrome.sizing:
+            self.root.after(50, self._thaw_after_resizing)
+            return
+        info, self._frozen = self._frozen, None
+        info.pop("in", None)
+        self.notebook.place_forget()
+        self.notebook.pack(**info)
+        self._layout_chrome()
+
+    def _measure_tabs(self, tab_row):
+        """The rows the tab slots cover, down the middle of the row where the centered tabs always
+        are. Depends on the theme and font only, so it's scanned once, not on every resize step"""
+        notebook = self.notebook
+        probe_x = notebook.winfo_width() // 2
+        in_tab = [y for y in range(0, tab_row)
+                  if str(self.root.tk.call(notebook._w, "identify", "tab", probe_x, y)) != ""]
+        return {"tab_row": tab_row, "in_tab_top": in_tab[0] if in_tab else None, "in_tab_rows": len(in_tab)}
+
+    def _do_layout_chrome(self):
+        self._layout_pending = False
         chrome, notebook = self.chrome, self.notebook
         page = notebook.nametowidget(notebook.select()) if notebook.select() else self.setup_tab
         tab_row = page.winfo_y()  # where the pages start: the bottom of the tab row
@@ -665,41 +714,37 @@ class ScrapifyApp:
         size, gap = chrome.px(logo_size), chrome.px(logo_gap)
         # the tabs sit in the middle of what you see between the logo and the window buttons: the
         # empty space from the logo's last colored column to the first tab's rounded rectangle is the
-        # same as from the last tab's rectangle to the minimize dash's first. measured from where the
-        # tabs are now, then the left margin moved by the difference
+        # same as from the last tab's rectangle to the minimize dash's first. ttk centers them
+        # itself (tabposition n), between margins that only shift that center, so they never depend on
+        # the window's width. restyling the notebook redraws every widget in the window, so it
+        # mustn't happen on each resize step (that was the lag), and a margin worked out from where the
+        # tabs were drawn could push them out of sight after a restore from maximized
         inset = max(0, gap - chrome.px(titlebar.button_width - titlebar.pill_width) // 2)
-        probe_y = max(1, tab_row - chrome.px(6))
-        slots = [x for x in range(notebook.winfo_width())
-                 if str(self.root.tk.call(notebook._w, "identify", "tab", x, probe_y)) != ""]
-        first_tab = slots[0] if slots else None
-        if slots:
-            side = chrome.px(tab_pill_side)
-            pill_left = notebook.winfo_x() + slots[0] + side
-            pill_right = notebook.winfo_x() + slots[-1] - side
-            logo_right = gap + getattr(self, "_logo_ink_right", size - 1)
-            buttons_left = self.root.winfo_width() - inset - self._caption_buttons.winfo_reqwidth()
-            cell, ink = chrome.px(titlebar.button_width), chrome.px(titlebar.glyph_ink)
-            dash_left = buttons_left + (cell - ink + 1) // 2
-            space_left, space_right = pill_left - logo_right - 1, dash_left - pill_right - 1
-            wanted = max(0, self._tab_margin_applied + (space_right - space_left) // 2)
-            if wanted != self._tab_margin_applied:
-                self._tab_margin = self._tab_margin_applied = wanted
-                ttk.Style(self.root).configure("TNotebook", tabmargins=[wanted, 0, 0, 0])
+        width = self.root.winfo_width()
+        logo_right = gap + getattr(self, "_logo_ink_right", size - 1)
+        cell, ink = chrome.px(titlebar.button_width), chrome.px(titlebar.glyph_ink)
+        dash_left = width - inset - self._caption_buttons.winfo_reqwidth() + (cell - ink + 1) // 2
+        left, right = notebook.winfo_x(), width - notebook.winfo_x() - notebook.winfo_width()
+        # tabs centered on (left + L + width - right - R) / 2, wanted on (logo_right + dash_left) / 2
+        shift = (logo_right + 1) - (width - dash_left) - left + right
+        margins = (max(0, shift), max(0, -shift))
+        if margins != getattr(self, "_tab_margins_applied", None):
+            self._tab_margins_applied = margins
+            ttk.Style(self.root).configure("TNotebook", tabmargins=[margins[0], 0, margins[1], 0])
+        tabs = getattr(self, "_tab_span", None)
+        if tabs is None or tabs["tab_row"] != tab_row:
+            tabs = self._tab_span = self._measure_tabs(tab_row)
         # the tab row ends at the rounded panel the pages sit in
         row_bottom = notebook.winfo_y() + tab_row - getattr(self, "_page_inset", 0)
         self._tab_row = row_bottom
         # the line everything sits on: the middle of the tabs' rounded rectangles, which is where
         # their text is centered too
         line = None
-        if first_tab is not None:
-            probe_x = first_tab + chrome.px(20)
-            in_tab = [y for y in range(0, tab_row)
-                      if str(self.root.tk.call(notebook._w, "identify", "tab", probe_x, y)) != ""]
-            if in_tab:
-                # the tab's slot is a little taller than the tab drawn in it, which sits in its middle
-                geometry = self._tab_geometry()
-                spare = (len(in_tab) - geometry["height"]) / 2
-                line = notebook.winfo_y() + in_tab[0] + spare + geometry["body"]
+        if tabs["in_tab_top"] is not None:
+            # the tab's slot is a little taller than the tab drawn in it, which sits in its middle
+            geometry = self._tab_geometry()
+            spare = (tabs["in_tab_rows"] - geometry["height"]) / 2
+            line = notebook.winfo_y() + tabs["in_tab_top"] + spare + geometry["body"]
         if line is None:
             line = row_bottom / 2
         # pixel rows: something n rows tall is centered on line when its top is line - (n - 1) / 2
@@ -1177,6 +1222,8 @@ class ScrapifyApp:
                     changed = True
             if changed:
                 self._refresh_session_status()
+            if self._mtime(choices.choices_file) != self._questions_mtime:
+                self._refresh_questions()
             mtime = self._mtime(config_file)
             if mtime != self._config_mtime:
                 if mtime is None:
@@ -1197,6 +1244,7 @@ class ScrapifyApp:
         self.timeout_var.set(str(self.config["sync_timeout_multiplier"]))
         self.retry_var.set(str(self.config["retry_attempts"]))
         self.request_speed_var.set(self.config.get("request_speed", "balanced"))
+        self.match_mode_var.set(self.config.get("match_mode", "automatic"))
         self.sync_direction_var.set(self.config["sync_direction"])
         self.pause_processes_var.set(", ".join(self.config["pause_while_running"]))
         for key, var in self.config_toggles.items():
@@ -1318,11 +1366,78 @@ class ScrapifyApp:
         self.sync_status_var = tk.StringVar(value="Idle.")
         ttk.Label(top, textvariable=self.sync_status_var).pack(side="left", padx=(gap_status, 0))
 
-        self.log_text = tk.Text(self.sync_tab, height=20, state="disabled", wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        scrollbar = ttk.Scrollbar(self.log_text, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
+        head = ttk.Frame(self.sync_tab)
+        head.pack(fill="x", padx=8, pady=(0, 4))
+        ttk.Label(head, text="Activity", font="SunValleyBodyStrongFont" if sv_ttk else None).pack(side="left")
+        ttk.Button(head, text="Open Sync Log", command=self._open_sync_log).pack(side="right")
+        ttk.Button(head, text="Clear", command=lambda: self.feed.clear()).pack(side="right", padx=(0, gap_controls))
+        self.feed = activityfeed.ActivityFeed(self.sync_tab, on_answer=self._answer_question,
+                                              on_sync_now=self._sync_answered)
+        self.feed.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        scrollbar = ttk.Scrollbar(self.feed.text)
+        self.feed.attach_scrollbar(scrollbar)
         scrollbar.pack(side="right", fill="y")
+        self._answered = []  # (pair, platform) answered since their last sync
+        self._questions_mtime = None
+        self._question_ids = None
+        self._refresh_questions(notify=False)
+
+    # ------------------------------------------------------------ questions
+
+    def _refresh_questions(self, notify=True):
+        """reads the semi-automatic questions (the background sync writes them too) into the feed"""
+        self._questions_mtime = self._mtime(choices.choices_file)
+        pending = choices.pending()
+        ids = {q["id"] for q in pending}
+        new = ids - (self._question_ids or set())
+        if notify and new and self._question_ids is not None:
+            self._notify(f"{len(new)} song{'s' if len(new) != 1 else ''} need{'' if len(new) != 1 else 's'} your "
+                         "answer. Scrapify wasn't sure they're the same song.", kind="ask")
+        self._question_ids = ids
+        self.feed.set_pending(pending, len(self._answered))
+
+    def _answer_question(self, question_id, same):
+        try:
+            item = choices.answer(question_id, same)
+        except OSError as e:
+            messagebox.showerror(app_name, f"Couldn't save the answer:\n{e}")
+            return
+        if item:
+            self._answered.append((item["pair"], item["service"]))
+            logging.getLogger("main").info("Answered: '%s - %s' is %s '%s - %s' on %s", item["source"].get("title"),
+                                           item["source"].get("artist"), "the same as" if same else "not",
+                                           item["candidate"].get("title"), item["candidate"].get("artist"),
+                                           item["service"], extra={"feed": False})
+        self._refresh_questions(notify=False)
+
+    def _sync_answered(self):
+        # one sync per platform the answers are about, towards it, for just those pairs
+        if not self._answered:
+            return
+        if not self._check_ready("syncing"):
+            return
+        groups = {}
+        for pair, platform in self._answered:
+            groups.setdefault(platform, set()).add(pair)
+        names = {p["name"] for p in self.config["playlist_pairs"]}
+        self._answered = []
+        self._refresh_questions(notify=False)
+
+        def run():
+            for platform, pairs in groups.items():
+                direction = "spotify_to_anghami" if platform == "Anghami" else "anghami_to_spotify"
+                self._run_sync(direction, sorted(pairs & names), True)
+        threading.Thread(target=run, daemon=True).start()
+
+    def _open_sync_log(self):
+        path = os.path.abspath(sync_main.log_file)
+        if not os.path.exists(path):
+            messagebox.showinfo(app_name, "No sync log yet.")
+            return
+        try:
+            os.startfile(path) if sysutil.on_windows else subprocess.Popen(["xdg-open", path])
+        except OSError as e:
+            messagebox.showerror(app_name, f"Couldn't open sync.log:\n{e}")
 
     def _save_pair_selection(self, key, names):
         if set(names) == {p["name"] for p in self.config["playlist_pairs"]}:
@@ -1380,6 +1495,8 @@ class ScrapifyApp:
             self._ui(self._reload_config)  # the sync may have saved a new playlist link
             self._ui(self._report_sync_summary, summary, interactive)
             self._notify(f"Sync finished ({label}).")
+            if pair_names:
+                self._answered = [(p, s) for p, s in self._answered if p not in pair_names]
         except Exception as e:
             self.log_queue.put(f"Sync crashed: {e}")
             self._ui(messagebox.showerror, app_name, f"Sync crashed:\n{e}\n\nThe log below has details.")
@@ -1390,8 +1507,13 @@ class ScrapifyApp:
             for button in self.sync_buttons:
                 self._ui(button.config, {"state": "normal"})
 
-    def _notify(self, message, always=False):
-        if (always or self.config.get("notifications_enabled")) and self.tray_icon is not None:
+    def _notify(self, message, always=False, kind="sync"):
+        # "Show notifications" is over everything; under it the start and finish ones and the
+        # semi-automatic questions can each be turned off. always is for problems and updates
+        if not self.config.get("notifications", True) or self.tray_icon is None:
+            return
+        wanted = always or self.config.get({"sync": "notifications_enabled", "ask": "ask_notifications"}[kind], True)
+        if wanted:
             try:
                 self.tray_icon.notify(message, app_name)
             except Exception:
@@ -1436,17 +1558,37 @@ class ScrapifyApp:
                 self._notify(f"Automatic sync: {problem.splitlines()[0]}", always=True)
 
     def _poll_log_queue(self):
-        lines = []
-        try:
-            while True:
-                lines.append(self.log_queue.get_nowait())
-        except queue.Empty:
-            pass
-        if lines:
-            self.log_text.configure(state="normal")
-            self.log_text.insert("end", "\n".join(lines) + "\n")
-            self.log_text.see("end")
-            self.log_text.configure(state="disabled")
+        # plain strings are the window's own messages; log records are shown when they're activity,
+        # a warning or error the feed hasn't already told in its own words, or marked for it
+        changed = False
+        for _ in range(500):  # drawn once for everything waiting, not once per line
+            try:
+                item = self.log_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if isinstance(item, str):
+                    self.feed.add_note(item, render=False)
+                    changed = True
+                    continue
+                event = getattr(item, "activity", None)
+                if event:
+                    self.feed.add_event(event, render=False)
+                    changed = True
+                    if event.get("kind") == "run_end":
+                        self.root.after(200, self._refresh_questions)
+                    continue
+                shown = getattr(item, "feed", None)
+                if shown is False or (shown is None and item.levelno < logging.WARNING):
+                    continue
+                text = getattr(item, "feed_text", None) or item.getMessage()
+                self.feed.add_note(text.splitlines()[0] if text else "", warning=item.levelno >= logging.WARNING,
+                                   render=False)
+                changed = True
+            except Exception:
+                pass  # a bad record must never stop the feed
+        if changed:
+            self.feed.render()
         self.root.after(150, self._poll_log_queue)
 
     # --------------------------------------------------------- automation tab
@@ -1695,25 +1837,25 @@ class ScrapifyApp:
             ttk.Label(row, text=hint).pack(side="left", padx=(gap_status, 0))
             setattr(self, {"match_threshold": "threshold_var", "sync_timeout_multiplier": "timeout_var",
                            "retry_attempts": "retry_var"}[key], var)
+            if key == "match_threshold":
+                self._build_judgement_setting(box)
 
         toggles = (
             ("Browser visibility", "Shows the browser during syncs, to watch what it does. Slower.",
              "Show browser window while syncing", "show_browser"),
             ("Debugging", "When a page fails to load, saves a screenshot and a copy of it next to the app.",
              "Save debug screenshots and pages on errors", "debug_dumps"),
-            ("Notifications", "A Windows notification when a sync starts and ends." + ("" if has_tray else " (built app only)"),
-             "Notify when a sync starts and ends", "notifications_enabled"),
         )
         for title, text, label, key in toggles:
             box = self._section(frame, title, text)
             var = self.config_toggles[key] = tk.BooleanVar(value=self.config.get(key, False))
             check = ttk.Checkbutton(box, text=label, variable=var, command=self._toggle_setting(var, key))
             check.pack(anchor="w", padx=8, pady=(4, 8))
-            if key == "notifications_enabled" and not has_tray:
-                check.state(["disabled"])
             if key == "debug_dumps":
                 ttk.Button(box, text="Clear Debug Files", command=self._clear_debug_files).pack(anchor="w", padx=8, pady=(0, 4))
                 ttk.Button(box, text="Clear Sync Log", command=self._clear_sync_log).pack(anchor="w", padx=8, pady=(0, 8))
+
+        self._build_notification_settings(frame)
 
         box = self._section(frame, "Updates",
                             f"You have version {version}. Scrapify looks for a new version on GitHub when it opens "
@@ -1776,6 +1918,52 @@ class ScrapifyApp:
         for line in (f"Version {version}", "Licensed under the GNU General Public License v3.0", "Created by z6"):
             ttk.Label(about, text=line, style="Muted.TLabel").pack(anchor="w")
         self._even_out(frame)
+
+    def _build_judgement_setting(self, box):
+        ttk.Label(box, text="Judgement:").pack(anchor="w", padx=8, pady=(0, 0))
+        self.match_mode_var = tk.StringVar(value=self.config.get("match_mode", "automatic"))
+        for value, label, note in (
+                ("automatic", "Automatic", "Scrapify decides every song by itself."),
+                ("semi", "Semi-automatic", "When Scrapify isn't sure two songs are the same, it asks you on the "
+                                           "Sync tab instead of guessing. Your answers are remembered."),
+        ):
+            ttk.Radiobutton(box, text=label, value=value, variable=self.match_mode_var,
+                            command=self._toggle_setting(self.match_mode_var, "match_mode")).pack(
+                anchor="w", padx=8, pady=(4, 0))
+            ttk.Label(box, text=note, style="Muted.TLabel", wraplength=620, justify="left").pack(
+                anchor="w", padx=(8 + check_text_offset, 8), pady=(0, 2))
+        ttk.Frame(box, height=6).pack()
+
+    def _build_notification_settings(self, frame):
+        box = self._section(frame, "Notifications", "Windows notifications from the tray icon."
+                            + ("" if has_tray else " (built app only)"))
+        indent = 8 + check_text_offset - check_box_inset
+        master = self.config_toggles["notifications"] = tk.BooleanVar(value=self.config.get("notifications", True))
+        children = []
+
+        def master_changed():
+            self._toggle_setting(master, "notifications")()
+            for check in children:
+                check.state(["!disabled"] if master.get() and has_tray else ["disabled"])
+
+        check = ttk.Checkbutton(box, text="Show notifications", variable=master, command=master_changed)
+        check.pack(anchor="w", padx=8, pady=(4, 2))
+        if not has_tray:
+            check.state(["disabled"])
+        for key, label, note in (
+                ("notifications_enabled", "When a sync starts and finishes", None),
+                ("ask_notifications", "Ask me when unsure",
+                 "With Semi-automatic matching, when a sync finds songs it isn't sure about."),
+        ):
+            var = self.config_toggles[key] = tk.BooleanVar(value=self.config.get(key, True))
+            child = ttk.Checkbutton(box, text=label, variable=var, command=self._toggle_setting(var, key))
+            child.pack(anchor="w", padx=(indent, 8), pady=(2, 0 if note else 2))
+            children.append(child)
+            if note:
+                ttk.Label(box, text=note, style="Muted.TLabel", wraplength=620, justify="left").pack(
+                    anchor="w", padx=(indent + check_text_offset, 8), pady=(0, 8))
+        for child in children:
+            child.state(["!disabled"] if master.get() and has_tray else ["disabled"])
 
     # ---------------------------------------------------------------- updates
 
@@ -2380,19 +2568,16 @@ class ScrapifyApp:
         style.configure("Muted.TLabel", foreground=p["muted"])
         style.configure("Treeview", rowheight=28)
         style.configure("TLabelframe.Label", font=("Segoe UI Variable Text", 10, "bold"))
-        self.log_text.configure(bg=p["field_bg"], fg=p["fg"], insertbackground=p["fg"], relief="flat",
-                                borderwidth=0, highlightthickness=1, padx=8, pady=6,
-                                highlightbackground=p["border"],
-                                highlightcolor=p["select_bg"], selectbackground=p["select_bg"],
-                                font=("Cascadia Mono", 9) if "Cascadia Mono" in tkfont.families(self.root) else ("Consolas", 9))
+        self.feed.set_colors(dark, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
+                             select_bg=p["select_bg"])
         for canvas in self._theme_canvases:
             canvas.configure(bg=p["bg"])
         if chrome:
             self.chrome.set_colors(bg=p["chrome"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
             # room for the logo left of the first tab (per theme, so again after every switch)
-            margin = getattr(self, "_tab_margin", self.chrome.px(logo_size + logo_gap))
-            self._tab_margin_applied = margin
-            style.configure("TNotebook", tabmargins=[margin, 0, 0, 0])
+            margins = getattr(self, "_tab_margins_applied", None) or (self.chrome.px(logo_size + logo_gap), 0)
+            self._tab_span = None  # the tabs' size may differ per theme, measured again
+            style.configure("TNotebook", tabmargins=[margins[0], 0, margins[1], 0])
             self._rounded_notebook(dark)
         else:
             style.configure("TNotebook", tabmargins=[0, 0, 0, 0], tabposition="nw")
@@ -2491,7 +2676,7 @@ class ScrapifyApp:
                     ("Notebook.focus", {"side": "top", "sticky": "nswe", "children": [
                         ("Notebook.label", {"side": "top", "sticky": ""})]})]})]})])
             style.configure("TNotebook", background=p["chrome"],  # behind the tabs
-                            tabposition="nw")  # placed by their margin, see _layout_chrome
+                            tabposition="n")  # centered, see _layout_chrome
         except Exception:
             pass  # sun valley's stock card
 
@@ -2521,6 +2706,8 @@ class ScrapifyApp:
             # the native theme untouched; root and canvases keep tk's default so translucency tools work
             style.theme_use(self._native_theme)
             style.configure("Muted.TLabel", foreground=muted_gray)
+            self.feed.set_colors(False, bg="SystemWindow", fg="SystemWindowText", muted=muted_gray,
+                                 border="SystemButtonShadow", select_bg="SystemHighlight")
             return
         # windows' native themes ignore color overrides, clam honors them
         p = dark_colors
@@ -2549,7 +2736,8 @@ class ScrapifyApp:
         style.configure("TScrollbar", background=p["button_bg"], troughcolor=p["bg"], bordercolor=p["border"], arrowcolor=p["fg"])
         style.configure("Horizontal.TProgressbar", background=p["select_bg"], troughcolor=p["field_bg"],
                         bordercolor=p["border"], lightcolor=p["select_bg"], darkcolor=p["select_bg"])
-        self.log_text.configure(bg=p["field_bg"], fg=p["fg"], insertbackground=p["fg"])
+        self.feed.set_colors(True, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
+                             select_bg=p["select_bg"])
         for canvas in self._theme_canvases:
             canvas.configure(bg=p["bg"])
 

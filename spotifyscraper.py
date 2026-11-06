@@ -36,6 +36,13 @@ _hide_cookie_banner_js = (
     " document.head.appendChild(s); });")
 
 
+def _mark_failed(details, tracks, message):
+    while len(details) < len(tracks):
+        details.append({})
+    for info in details:
+        info["error"] = message
+
+
 def playlist_id_of(playlist_url):
     m = re.search(r"/playlist/([A-Za-z0-9]+)", playlist_url or "")
     return m.group(1) if m else None
@@ -454,15 +461,25 @@ class SpotifyScraper(bsc.BrowserClient):
         finally:
             page.close()
 
-    def add_tracks(self, playlist_url, tracks, threshold=87, exact_version=False):
-        """adds in one call, checks with one re-read. returns the songs not confirmed added"""
+    def find_tracks(self, playlist_url, tracks, threshold=87, exact_version=False, details=None, known=None,
+                    rejected=None):
+        """the song on spotify for each of tracks (None where there's none), read only"""
+        if not self._api_url:
+            self.get_playlist_tracks(playlist_url)
+        # searching the artist's name last brings up their best known songs
+        return find_many(tracks, self.search_many, threshold, exact_version, self.log, "Spotify", self.search_many,
+                         details=details, known=known, rejected=rejected)
+
+    def add_tracks(self, playlist_url, tracks, threshold=87, exact_version=False, details=None, known=None,
+                   rejected=None):
+        """adds in one call, checks with one re-read. returns the songs not confirmed added. details
+        (a list) gets each song's find_many detail, plus confirmed or an error message"""
+        if details is None:
+            details = []
         if not tracks:
             return []
         try:
-            if not self._api_url:
-                self.get_playlist_tracks(playlist_url)
-            # searching the artist's name last brings up their best known songs
-            hits = find_many(tracks, self.search_many, threshold, exact_version, self.log, "Spotify", self.search_many)
+            hits = self.find_tracks(playlist_url, tracks, threshold, exact_version, details, known, rejected)
             found = [(t, hit) for t, hit in zip(tracks, hits) if hit]
             failed = [t for t, hit in zip(tracks, hits) if not hit]
             if not found:
@@ -477,13 +494,19 @@ class SpotifyScraper(bsc.BrowserClient):
         except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
-            self.log.warning("Spotify: adding failed (%s), nothing was added this run.", e)
+            self.log.warning("Spotify: adding failed (%s), nothing was added this run.", e, extra={"feed": False})
+            _mark_failed(details, tracks, f"Adding failed: {e}")
             return list(tracks)
+        index_of = {id(t): i for i, t in enumerate(tracks)}
         for t, hit in found:
+            info = details[index_of[id(t)]] if len(details) == len(tracks) else {}
             if hit["uri"] in current:
+                info["confirmed"] = True
                 self.log.info("Spotify: added '%s - %s' as '%s - %s'", t["title"], t["artist"], hit["title"], hit["artist"])
             else:
-                self.log.warning("Spotify: '%s - %s' isn't in the playlist after adding", t["title"], t["artist"])
+                info["error"] = "Not in the playlist after adding"
+                self.log.warning("Spotify: '%s - %s' isn't in the playlist after adding", t["title"], t["artist"],
+                                 extra={"feed": False})
                 failed.append(t)
         return failed
 

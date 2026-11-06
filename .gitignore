@@ -18,6 +18,7 @@ scrapify_settings.json
 browser_paths.json
 anghami_playlist_ids.json
 spotify_search_template.json
+match_choices.json
 sync.log
 scrapify_sync.lock
 scrapify_autosync.pid

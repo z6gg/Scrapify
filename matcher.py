@@ -1,10 +1,18 @@
 """matches songs across spotify and anghami by title, artist and length, in any script"""
 
+import math
 import re
 import unicodedata
 from functools import lru_cache
 
 from rapidfuzz import fuzz
+
+import translit
+
+try:
+    from matchmodel_weights import judge as _judge_weights
+except ImportError:  # not trained: the rules decide alone
+    _judge_weights = None
 
 # arabic letter variants catalogs mix up, persian letters, arabic and persian digits
 _arabic_fold = str.maketrans({
@@ -36,7 +44,11 @@ _arabic_consonants = {
 _arabic_consonants_soft = {**_arabic_consonants, "ق": "", "ث": "s", "ذ": "d", "ظ": "d"}
 # gulf songs say qaf as g ("Galo Tara" = قالوا ترى)
 _arabic_consonants_gulf = {**_arabic_consonants, "ق": "J"}
-_arabic_readings = (False, True, "gulf")
+# a word's last ه is often a vowel: عبده is "Abdu", نسيته "Naseto", باله "Balo". the "open" reading
+# leaves it out. not in الله, said with its h ("Allah")
+_arabic_readings = (False, True, "gulf", "open")
+_overlap_readings = (False, True, "gulf")
+_said_final_h = frozenset({"الله", "لله", "والله", "بالله", "ياالله", "اله"})
 _digraphs = (("kh", "K"), ("sh", "S"), ("ch", "S"), ("gh", "J"), ("th", "t"), ("dh", "d"), ("ph", "f"))
 _latin_consonants = {
     "b": "b", "p": "b", "t": "t", "d": "d", "z": "z", "s": "s", "c": "k", "k": "k", "q": "k",
@@ -66,9 +78,11 @@ def skeleton(text, soft=False):
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub("['’ʼ`´]", "", text)  # "Ta'abt" is one word
     arabic_map = (_arabic_consonants_gulf if soft == "gulf" else
-                  _arabic_consonants_soft if soft else _arabic_consonants)
+                  _arabic_consonants_soft if soft is True else _arabic_consonants)
     words = []
     for word in re.findall(r"\w+", text):
+        if soft == "open" and len(word) >= 3 and word.endswith("ه") and word not in _said_final_h:
+            word = word[:-1]
         franco = bool(re.search(r"[a-z]", word))
         for pair, symbol in _digraphs:  # text is lowercase, so the symbols can't clash
             word = word.replace(pair, symbol)
@@ -141,6 +155,10 @@ def _adds_derivative_tags(target, candidate):
 
 # same artist, same length to the second and every title word present counts as a title match
 _same_length_title_score = 90
+# the learned judge (bench/train_model.py) settles arabic songs the rules score from here to the
+# threshold: it says yes from this sure, and then they count as this score. never past a hard rule
+_judge_floor, _judge_yes, _judge_score = 50, 0.9, 90
+_judge_artist_spelling = 0.3
 
 
 def match_score(a, b, versions=True):
@@ -162,9 +180,67 @@ def match_score(a, b, versions=True):
         title_score = _same_length_title_score
     elif title_score >= 87 and _far_apart(a, b) and not _same_title(a, b):
         title_score = 80  # one title only contains the other and they run far apart ("Habibi" / "Bes Ellak Habibi")
+    elif (_judge_weights and arabic_song and _judge_floor <= min(title_score, artist_score) < 87
+          and not _far_apart(a, b) and _version_tags(a_title) == _version_tags(b_title)
+          and _judge_says_same(a, b, artist_score)):
+        title_score, artist_score = max(title_score, _judge_score), max(artist_score, _judge_score)
     if versions and _version_tags(a_title) != _version_tags(b_title):
         title_score = min(title_score, 60)
     return min(title_score, artist_score)
+
+
+def _cross_best(a_names, b_names):
+    best = None
+    for x in a_names:
+        for y in b_names:
+            if not x or not y or has_arabic(x) == has_arabic(y):
+                continue
+            ar, la = (x, y) if has_arabic(x) else (y, x)
+            s = translit.similarity(ar, la)
+            if s is not None and (best is None or s > best):
+                best = s
+    return best
+
+
+def judge_features(a, b):
+    """what the learned judge weighs for two songs (bench/train_model.py trains on these)"""
+    arabic = _is_arabic_song(a) or _is_arabic_song(b)
+    title = _names_score(_names(a, "title"), _names(b, "title"), lambda x, y: _title_pair_score(x, y, arabic)) / 100
+    artist = _names_score(_names(a, "artist"), _names(b, "artist"), lambda x, y: _artist_pair_score(x, y, arabic)) / 100
+    t_cross = _cross_best([_overlap_text(n) for n in _names(a, "title")], [_overlap_text(n) for n in _names(b, "title")])
+    a_cross = _cross_best(_names(a, "artist"), _names(b, "artist"))
+    gap = duration_gap(a, b)
+    clip = lambda v: max(-2.0, min(2.0, v))
+    return [
+        title, artist,
+        clip(t_cross) if t_cross is not None else 0.0, 1.0 if t_cross is not None else 0.0,
+        clip(a_cross) if a_cross is not None else 0.0, 1.0 if a_cross is not None else 0.0,
+        1.0 if gap is not None and gap <= 2.5 else 0.0,
+        min(gap, 120) / 60 if gap is not None else 0.0,
+        1.0 if gap is None else 0.0,
+        1.0 if _title_overlap(a, b) else 0.0,
+        1.0 if _version_tags(normalize(a["title"])) != _version_tags(normalize(b["title"])) else 0.0,
+    ]
+
+
+def same_song_probability(a, b, features=None):
+    """the learned judge's 0 to 1 that a and b are one song, None without a trained model"""
+    if not _judge_weights or not translit.available():
+        return None
+    coef = _judge_weights["coef"]
+    z = sum(w * x for w, x in zip(coef, features or judge_features(a, b))) + coef[-1]
+    return 1 / (1 + math.exp(-max(-30.0, min(30.0, z))))
+
+
+def _judge_says_same(a, b, artist_score):
+    # a hard rule over the judge: it never overrules the artist. the artists must already agree by
+    # the rules, or be one name in two scripts by the spelling model ("Batal El Alam" by Raheem is
+    # not Marwan Moussa's, however alike the titles)
+    features = judge_features(a, b)
+    artist_cross, artist_spelling = features[5], features[4]
+    if artist_score < 87 and not (artist_cross and artist_spelling >= _judge_artist_spelling):
+        return False
+    return same_song_probability(a, b, features) >= _judge_yes
 
 
 def is_same_artist(x, y):
@@ -221,8 +297,10 @@ def _title_overlap(a, b):
             if not x or not y:
                 continue
             sx, sy = _overlap_text(x), _overlap_text(y)
-            for soft_x in (_arabic_readings if has_arabic(sx) else (False,)):
-                for soft_y in (_arabic_readings if has_arabic(sy) else (False,)):
+            # not the "open" reading here: on top of a dropped qaf it leaves one word titles as thin as
+            # "dm" (الدمعة vs الوعد قدام)
+            for soft_x in (_overlap_readings if has_arabic(sx) else (False,)):
+                for soft_y in (_overlap_readings if has_arabic(sy) else (False,)):
                     wx, wy = _skeleton_words(sx, soft_x), _skeleton_words(sy, soft_y)
                     wx = {k: n for k, n in wx.items() if k not in own} or wx
                     wy = {k: n for k, n in wy.items() if k not in own} or wy
@@ -429,10 +507,37 @@ def pick_best(target, candidates, threshold=87, exact_version=False):
     return None, closest_match(target, candidates)[1], False
 
 
+# semi-automatic asks about a song without a match when its closest candidate scores at least
+# unsure_floor, or with the learned judge, from _judge_floor when the judge gives it unsure_probability
+unsure_floor, unsure_probability = 60, 0.1
+
+
+def choice_key(track):
+    """what a remembered yes or no about a song is filed under: its platform id, else its names"""
+    if track.get("uri"):
+        return track["uri"]
+    if track.get("id"):
+        return f"anghami:{track['id']}"
+    return track_key(track.get("title", ""), track.get("artist", ""))
+
+
+def _candidate_id(track):
+    return track.get("uri") or track.get("id")
+
+
 def find_in_catalog(search, title, artist, threshold=87, exact_version=False, log=None, service="",
-                    aliases=None, artist_songs=None, duration=None):
+                    aliases=None, artist_songs=None, duration=None, detail=None, rejected=None):
     """search(query) -> [{title, artist, ...}]. tries "title artist", without a remaster tag, the
-    other script names, then the title alone, stopping at the first same version hit of the right length"""
+    other script names, then the title alone, stopping at the first same version hit of the right length.
+    detail (a dict) gets the hit, whether it's the same version, the closest candidate and its score.
+    rejected: candidate ids the user said aren't this song"""
+    if detail is None:
+        detail = {}
+    if rejected:
+        plain_search, plain_artist_songs = search, artist_songs
+        search = lambda q: [c for c in plain_search(q) if _candidate_id(c) not in rejected]
+        if plain_artist_songs:
+            artist_songs = lambda a: [c for c in plain_artist_songs(a) if _candidate_id(c) not in rejected]
     # artist_songs(artist) is the last resort, also when the best hit is the wrong length: it catches
     # names spelled too differently for search, translated titles ("Ya Mn Hawah" is "Love Humiliation")
     # and cuts search ranks low
@@ -453,22 +558,34 @@ def find_in_catalog(search, title, artist, threshold=87, exact_version=False, lo
         hit, score, same_version = pick_best(target, seen, threshold, exact_version)
         best_score = max(best_score, score)
         if hit is not None and same_version and good_length(target, hit):
+            detail.update(hit=hit, same_version=True, closest=hit, score=score)
             return hit
     if artist_songs and artist.strip():  # a song with no artist has no artist page to read
         seen += artist_songs(artist)
         hit, score, same_version = pick_best(target, seen, threshold, exact_version)
         best_score = max(best_score, score)
     if hit and same_version:
+        detail.update(hit=hit, same_version=True, closest=hit, score=best_score)
         return hit
     if hit:
+        detail.update(hit=hit, same_version=False, closest=hit, score=best_score)
         if log:
             log.info("%s: no exact version of '%s - %s', using '%s - %s'",
                      service, title, artist, hit["title"], hit["artist"])
         return hit
+    closest, _ = closest_match(target, seen)
+    p = same_song_probability(target, closest) if closest is not None else None
+    if closest is None:
+        unsure = False
+    elif p is None:  # no model: the rules' score alone
+        unsure = best_score >= unsure_floor
+    else:  # the judge decides, inside the zone where it works
+        unsure = best_score >= _judge_floor and p >= unsure_probability
+    detail.update(hit=None, same_version=False, closest=closest, score=best_score, probability=p, unsure=unsure)
     if log:
-        closest, _ = closest_match(target, seen)
         log.warning("%s search for '%s - %s' found no match%s", service, title, artist,
-                    f" (closest '{closest['title']} - {closest['artist']}', score {best_score:.0f})" if closest else "")
+                    f" (closest '{closest['title']} - {closest['artist']}', score {best_score:.0f})" if closest else "",
+                    extra={"feed": False})
     return None
 
 
@@ -479,26 +596,43 @@ class _NeedsLookup(Exception):
 
 
 def find_many(tracks, search_many, threshold=87, exact_version=False, log=None, service="",
-              artist_songs_many=None, rounds=1, between_rounds=None):
+              artist_songs_many=None, rounds=1, between_rounds=None, details=None, known=None, rejected=None):
     """find_in_catalog for many songs with the lookups batched, picking exactly what one by one would.
     rounds > 1 searches again from scratch for whatever is still unmatched (anghami's results vary
-    from call to call); only the last round logs misses"""
-    results, pending = [None] * len(tracks), list(range(len(tracks)))
+    from call to call); only the last round logs misses. details (a list) gets find_in_catalog's
+    detail per song. known {choice_key: candidate} are songs the user already matched, used without
+    a search; rejected {choice_key: candidate ids} are candidates the user said are other songs"""
+    known, rejected = known or {}, rejected or {}
+    results, pending = [None] * len(tracks), []
+    infos = [{} for _ in tracks]
+    for i, t in enumerate(tracks):
+        chosen = known.get(choice_key(t))
+        if chosen:
+            results[i] = chosen
+            infos[i] = {"hit": chosen, "same_version": True, "closest": chosen, "score": 100, "remembered": True}
+        else:
+            pending.append(i)
     for r in range(rounds):
+        if not pending:
+            break
         if r and between_rounds:
             between_rounds()  # not straight back at the site with the same searches
         last = r == rounds - 1
+        round_infos = [{} for _ in pending]
         found = _find_many_once([tracks[i] for i in pending], search_many, threshold, exact_version,
-                                log if last else None, service, artist_songs_many)
-        for i, hit in zip(pending, found):
+                                log if last else None, service, artist_songs_many, round_infos,
+                                [rejected.get(choice_key(tracks[i])) for i in pending])
+        for i, hit, info in zip(pending, found, round_infos):
             results[i] = hit
+            infos[i] = info
         pending = [i for i in pending if results[i] is None]
-        if not pending:
-            break
+    if details is not None:
+        details[:] = infos
     return results
 
 
-def _find_many_once(tracks, search_many, threshold, exact_version, log, service, artist_songs_many):
+def _find_many_once(tracks, search_many, threshold, exact_version, log, service, artist_songs_many,
+                    infos=None, rejected=None):
     # each round every unresolved song runs against what's fetched so far and raises at the first
     # lookup it lacks. those get fetched together and the round repeats
     searched, artists = {}, {}
@@ -518,10 +652,14 @@ def _find_many_once(tracks, search_many, threshold, exact_version, log, service,
         need_search, need_artist, still = [], [], []
         for i in pending:
             t = tracks[i]
+            info = {}
             try:
                 results[i] = find_in_catalog(search, t["title"], t["artist"], threshold, exact_version, log,
                                              service, t.get("aliases"),
-                                             artist_songs if artist_songs_many else None, t.get("duration"))
+                                             artist_songs if artist_songs_many else None, t.get("duration"),
+                                             info, rejected[i] if rejected else None)
+                if infos is not None:
+                    infos[i] = info
             except _NeedsLookup as need:
                 (need_search if need.kind == "search" else need_artist).append(need.key)
                 still.append(i)

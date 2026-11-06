@@ -10,7 +10,7 @@ import struct
 import urllib.parse
 
 import browsersessioncommon as bsc
-from matcher import best_match, find_many, has_arabic, is_same_artist, match_score, normalize
+from matcher import best_match, find_many, has_arabic, is_same_artist, match_pairs, match_score, normalize
 import time
 
 from browsersessioncommon import AuthError, PlaylistNotFoundError, RateLimitedError
@@ -261,9 +261,10 @@ class AnghamiClient(bsc.BrowserClient):
                         songs[song_id] = info
         return songs
 
-    def _read_playlist_api(self, playlist_id):
+    def _read_playlist_api(self, playlist_id, partial=False):
         # songorder keeps the recommended section out. buffered=1 like the player, the plain
-        # response can lag behind a fresh add
+        # response can lag behind a fresh add. partial: (songs that came back, how many didn't)
+        # instead of failing when some didn't
         data = self._gateway({"type": "GETplaylistdata", "playlistid": playlist_id, "buffered": "1"})
         order = [x for x in str(data.get("songorder") or "").split(",") if x]
         songs = self._decode_song_buffers(data.get("songbuffers"))
@@ -274,6 +275,8 @@ class AnghamiClient(bsc.BrowserClient):
         tracks = [_with_aliases({"title": songs[i].get("title", "").strip(), "artist": songs[i].get("artist", "").strip(),
                                  "id": i, "duration": _seconds(songs[i].get("duration"))}, songs[i].get("keywords"))
                   for i in order if i in songs]
+        if partial:
+            return tracks, len(order) - len(tracks)
         if len(tracks) < len(order):
             # a partial list would read as songs deleted
             raise RuntimeError(f"playlist lists {len(order)} songs but only {len(tracks)} came back")
@@ -283,12 +286,25 @@ class AnghamiClient(bsc.BrowserClient):
 
     def get_playlist_tracks(self, playlist_url):
         try:
-            return self._read_playlist_api(self._open_api(playlist_url))
+            tracks, missing = self._read_playlist_api(self._open_api(playlist_url), partial=True)
         except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
             self.log.info("Anghami API read failed (%s), reading the page instead.", e)
             return self._get_playlist_tracks_dom(playlist_url)
+        if not missing:
+            return tracks
+        # a song or two the api leaves out (one that's no longer available, say) used to throw the
+        # whole read away for the page's, which has no lengths and no names in the other script, so
+        # every song then matched worse. now only the left out ones come from the page
+        self.log.info("Anghami: %d of the playlist's songs came back without details, reading the page for them.",
+                      missing)
+        page_tracks = self._get_playlist_tracks_dom(playlist_url)
+        _pairs, page_only, _api_only = match_pairs(page_tracks, tracks)
+        if len(page_only) > missing:
+            # the page and the api disagree more than the gap explains: the page's list is the full one
+            return page_tracks
+        return tracks + page_only
 
     def _get_playlist_tracks_dom(self, playlist_url):
         page = self._context.new_page()
@@ -448,15 +464,26 @@ class AnghamiClient(bsc.BrowserClient):
         self.log.info("Anghami: created playlist '%s' (%s)", name, playlist_id)
         return f"https://play.anghami.com/playlist/{playlist_id}"
 
-    def add_tracks(self, playlist_url, tracks, threshold=87, exact_version=False):
-        """appends in one call, checks with one re-read. returns the songs not confirmed added"""
+    def find_tracks(self, playlist_url, tracks, threshold=87, exact_version=False, details=None, known=None,
+                    rejected=None):
+        """the song on anghami for each of tracks (None where there's none), read only"""
+        self._open_api(playlist_url)
+        return find_many(tracks, self.search_many, threshold, exact_version, self.log, "Anghami",
+                         self.artist_songs_many, rounds=2, between_rounds=self._wait_between_rounds,
+                         details=details, known=known, rejected=rejected)
+
+    def add_tracks(self, playlist_url, tracks, threshold=87, exact_version=False, details=None, known=None,
+                   rejected=None):
+        """appends in one call, checks with one re-read. returns the songs not confirmed added. details
+        (a list) gets each song's find_many detail, plus confirmed or an error message"""
+        if details is None:
+            details = []
         if not tracks:
             return []
         try:
             playlist_id = self._open_api(playlist_url)
-            already = {t["id"] for t in self._read_playlist_api(playlist_id)}
-            hits = find_many(tracks, self.search_many, threshold, exact_version, self.log, "Anghami",
-                             self.artist_songs_many, rounds=2, between_rounds=self._wait_between_rounds)
+            already = {t["id"] for t in self._read_playlist_api(playlist_id, partial=True)[0]}
+            hits = self.find_tracks(playlist_url, tracks, threshold, exact_version, details, known, rejected)
             found = [(t, hit) for t, hit in zip(tracks, hits) if hit]
             failed = [t for t, hit in zip(tracks, hits) if not hit]
             new_ids = list(dict.fromkeys(hit["id"] for _t, hit in found if hit["id"] not in already))
@@ -465,17 +492,26 @@ class AnghamiClient(bsc.BrowserClient):
                                "action": "append", "songID": ",".join(new_ids)}, post=True)
             if not found:
                 return failed
-            now = {t["id"] for t in self._read_playlist_api(playlist_id)}
+            now = {t["id"] for t in self._read_playlist_api(playlist_id, partial=True)[0]}
         except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
-            self.log.warning("Anghami: adding failed (%s), nothing was added this run.", e)
+            self.log.warning("Anghami: adding failed (%s), nothing was added this run.", e, extra={"feed": False})
+            while len(details) < len(tracks):
+                details.append({})
+            for info in details:
+                info["error"] = f"Adding failed: {e}"
             return list(tracks)
+        index_of = {id(t): i for i, t in enumerate(tracks)}
         for t, hit in found:
+            info = details[index_of[id(t)]] if len(details) == len(tracks) else {}
             if hit["id"] in now:
+                info["confirmed"] = True
                 self.log.info("Anghami: added '%s - %s' as '%s - %s'", t["title"], t["artist"], hit["title"], hit["artist"])
             else:
-                self.log.warning("Anghami: '%s - %s' isn't in the playlist after adding", t["title"], t["artist"])
+                info["error"] = "Not in the playlist after adding"
+                self.log.warning("Anghami: '%s - %s' isn't in the playlist after adding", t["title"], t["artist"],
+                                 extra={"feed": False})
                 failed.append(t)
         return failed
 
@@ -485,7 +521,7 @@ class AnghamiClient(bsc.BrowserClient):
             return []
         try:
             playlist_id = self._open_api(playlist_url)
-            current = self._read_playlist_api(playlist_id)
+            current = self._read_playlist_api(playlist_id, partial=True)[0]
         except (AuthError, PlaylistNotFoundError, RateLimitedError):
             raise
         except Exception as e:
@@ -514,7 +550,7 @@ class AnghamiClient(bsc.BrowserClient):
         if not targets:
             return failed
         try:
-            left = {t["id"] for t in self._read_playlist_api(playlist_id)}
+            left = {t["id"] for t in self._read_playlist_api(playlist_id, partial=True)[0]}
         except RateLimitedError:
             raise
         except Exception as e:

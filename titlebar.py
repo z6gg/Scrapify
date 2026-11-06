@@ -19,6 +19,7 @@ on_windows = sys.platform == "win32"
 
 WM_NCCALCSIZE = 0x0083
 WM_NCLBUTTONDOWN = 0x00A1
+WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE = 0x0231, 0x0232
 HTCAPTION, HTTOP = 2, 12
 SM_CYSIZEFRAME, SM_CXPADDEDBORDER = 33, 92
 SWP_FRAMECHANGED = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020  # nosize nomove nozorder noactivate framechanged
@@ -81,13 +82,16 @@ class Chrome:
         self.scale = root.winfo_fpixels("1i") / 96
         self.hwnd = None
         self._proc = None  # the callback has to outlive the subclass
+        # true while windows' own move or resize loop runs (dragging an edge or the title area).
+        # only a flag: tk mustn't be called from inside the window procedure
+        self.sizing = False
         self.colors = {}
         self._painted = []  # widgets recolored by set_colors
         self._texts = []  # labels drawn in the title color, dimmed while the window isn't active
         families = set(tkfont.families(root))
         self.icon_font = "Segoe Fluent Icons" if "Segoe Fluent Icons" in families else "Segoe MDL2 Assets"
         self.buttons = {}
-        root.bind("<Configure>", self._sync_maximize_glyph, add="+")
+        root.bind("<Configure>", self._on_root_configure, add="+")
         root.bind("<FocusIn>", lambda e: self._paint(), add="+")
         root.bind("<FocusOut>", lambda e: self.root.after(1, self._paint), add="+")
 
@@ -247,6 +251,21 @@ class Chrome:
 
     def _toggle_maximize(self):
         self.root.state("normal" if self.maximized() else "zoomed")
+        # the buttons move out from under the mouse, so no <Leave> comes and the hover frame would
+        # stay lit; and windows may still call the window maximized when the first <Configure> runs
+        self.root.after(60, self._settle)
+
+    def _settle(self):
+        self._sync_maximize_glyph()
+        try:
+            px, py = self.root.winfo_pointerxy()
+        except tk.TclError:
+            return
+        for name, canvas in self.buttons.items():
+            x, y = canvas.winfo_rootx(), canvas.winfo_rooty()
+            inside = x <= px < x + canvas.winfo_width() and y <= py < y + canvas.winfo_height()
+            if (canvas.target > 0) != inside:
+                self._hover(name, inside)
 
     def _minimize(self):
         self.root.iconify()
@@ -258,6 +277,14 @@ class Chrome:
             self.root.tk.call(handler)
         else:
             self.root.destroy()
+
+    def _on_root_configure(self, event):
+        if event.widget is self.root:
+            self._sync_maximize_glyph()
+            # maximize and restore from the keyboard, snap or a double click land here too
+            if getattr(self, "_settle_job", None):
+                self.root.after_cancel(self._settle_job)
+            self._settle_job = self.root.after(120, self._settle)
 
     def _sync_maximize_glyph(self, event=None):
         if (event is not None and event.widget is not self.root) or "maximize" not in self.buttons:
@@ -294,6 +321,10 @@ class Chrome:
                 return False
 
             def proc(hwnd, msg, wparam, lparam, _id, _data):
+                if msg == WM_ENTERSIZEMOVE:
+                    self.sizing = True
+                elif msg == WM_EXITSIZEMOVE:
+                    self.sizing = False
                 if msg == WM_NCCALCSIZE and wparam:
                     params = ctypes.cast(lparam, ctypes.POINTER(NCCALCSIZE_PARAMS)).contents
                     top = params.rgrc[0].top
