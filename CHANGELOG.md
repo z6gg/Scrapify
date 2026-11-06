@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.3
+
+- Settings > Request speed: Safer, Balanced (the default) or Fast. Syncs no longer send as many requests as possible at once
+- If Spotify or Anghami says to slow down, Scrapify waits and tries once more, then stops the sync instead of pushing on
+
 ## 1.3.2
 
 - Arabic songs match far more reliably between Spotify and Anghami: spellings that barely share letters ("El Layaly" and "Ellayali"), Gulf spellings ("Galo Tara" for قالوا ترى), and titles one side shortened
