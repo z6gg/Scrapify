@@ -47,7 +47,7 @@ Scrapify isn't signed, so Windows may warn the first time: click **More info > R
 Right-click a pair for Edit, Exclude Songs and Remove. Automatic syncs are on the **Automation** tab, everything else on **Settings**.
 
 > [!WARNING]
-> Syncing searches Spotify and Anghami for every song it adds, much faster than a person would. **Settings > Request speed** controls the pace: **Balanced** (the default) sends a few requests at a time with short pauses, **Safer** slows down further, and **Fast** sends as many as the browser allows. Faster potentially means higher risk: rapid requests are more likely to get your account rate limited or flagged. If a site says to slow down, Scrapify waits once and then stops the sync, whatever the speed. A big first sync of hundreds of songs is the riskiest moment, so consider **Safer** for that one.
+> Syncing searches much faster than a person would. **Settings > Request speed** sets the pace (**Balanced** by default). Faster potentially means higher risk of your account being rate limited or flagged. Consider **Safer** for a big first sync.
 
 Your settings, logins and log are in `%LOCALAPPDATA%\Scrapify` (**Settings > Open Folder**). The two `*_session.json` files there are your logins: don't share them.
 
