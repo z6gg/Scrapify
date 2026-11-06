@@ -1667,21 +1667,14 @@ class ScrapifyApp:
         if not has_tray:
             check.state(["disabled"])
 
-        box = self._section(frame, "Request speed",
-                            "How fast Scrapify searches and reads on Spotify and Anghami during a sync. Most syncs "
-                            "only change a few songs and take seconds at any speed; a big first sync takes longer "
-                            "on the safer settings.")
+        box = self._section(frame, "Request speed", "How fast syncs search Spotify and Anghami.")
         self.request_speed_var = tk.StringVar(value=self.config.get("request_speed", "balanced"))
-        for value, label in (("gentle", "Safer: one or two requests at a time, with longer pauses"),
-                             ("balanced", "Balanced: a few at a time, with short pauses (default)"),
-                             ("fast", "Fast: as many as the browser allows, no pauses")):
+        for value, label in (("gentle", "Safer"), ("balanced", "Balanced (default)"), ("fast", "Fast")):
             ttk.Radiobutton(box, text=label, value=value, variable=self.request_speed_var,
                             command=self._toggle_setting(self.request_speed_var, "request_speed")).pack(
                 anchor="w", padx=8, pady=(4, 0))
-        ttk.Label(box, text="Note: faster potentially means higher risk. Rapid requests look less like a person "
-                            "using the site and are more likely to get your account rate limited or flagged. If a "
-                            "site says to slow down, Scrapify waits once, then stops the sync at any speed.",
-                  style="Muted.TLabel", wraplength=620, justify="left").pack(anchor="w", padx=8, pady=(6, 8))
+        ttk.Label(box, text="Note: faster potentially means higher risk.",
+                  style="Muted.TLabel").pack(anchor="w", padx=8, pady=(6, 8))
 
         for title, text, label, key, cast, valid, hint in (
             ("Matching", "How close a title and artist must be to count as the same song. Lower catches more "
