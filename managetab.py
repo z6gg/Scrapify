@@ -61,6 +61,8 @@ class Thumbs:
     def __init__(self, root, on_ready):
         self.root, self.on_ready = root, on_ready
         self._images = {}  # (url, size) -> PhotoImage, or None while loading / failed
+        self._pil = {}  # (url, size) -> the loaded image, for drawing a tick on it
+        self._ticked = {}  # (url, size, colors) -> PhotoImage with the tick badge
         self._pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="thumbs") if Image else None
         self._pending_redraw = False
         try:
@@ -102,7 +104,41 @@ class Thumbs:
             return
         self.root.after(0, self._ready, url, size, image)
 
+    def ticked(self, url, size, accent, ring):
+        """the cover with a round tick in its corner (a grey square while there's no cover yet)"""
+        if self._pool is None:
+            return None
+        base = self._pil.get((url, size))
+        key = (url if base is not None else None, size, accent, ring)
+        if key in self._ticked:
+            return self._ticked[key]
+        if url and (url, size) not in self._images:
+            self.get(url, size)  # starts loading the cover, the tick is redrawn on it after
+        scale = 4  # drawn big and shrunk, so the circle and tick come out smooth
+        big = size * scale
+        if base is not None:
+            image = base.resize((big, big), Image.LANCZOS)
+        else:
+            image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+            ImageDraw.Draw(image).rounded_rectangle((0, 0, big - 1, big - 1), radius=big // 8, fill="#7a7a7a")
+        draw = ImageDraw.Draw(image)
+        d = int(big * 0.62)  # the badge's diameter
+        x0, y0 = big - d, big - d
+        draw.ellipse((x0, y0, big - 1, big - 1), fill=ring)
+        inset = max(scale, int(d * 0.1))
+        draw.ellipse((x0 + inset, y0 + inset, big - 1 - inset, big - 1 - inset), fill=accent)
+        cx, cy, r = x0 + d / 2, y0 + d / 2, d / 2 - inset
+        points = [(cx - r * 0.5, cy + r * 0.02), (cx - r * 0.12, cy + r * 0.4), (cx + r * 0.52, cy - r * 0.38)]
+        draw.line(points, fill="white", width=max(scale, int(r * 0.32)), joint="curve")
+        try:
+            photo = ImageTk.PhotoImage(image.resize((size, size), Image.LANCZOS), master=self.root)
+        except tk.TclError:
+            return None
+        self._ticked[key] = photo
+        return photo
+
     def _ready(self, url, size, image):
+        self._pil[(url, size)] = image
         try:
             self._images[(url, size)] = ImageTk.PhotoImage(image, master=self.root)
         except tk.TclError:
@@ -573,23 +609,31 @@ class PlatformPane(ttk.Frame):
         if not self.items and self.playlists:
             self.tree.insert("", "end", text="   No playlists match.", tags=("readonly",))
 
+    def tags_for(self, p):
+        # a ticked playlist is a highlighted row, there's no box to tick
+        tags = () if p.get("editable") else ("readonly",)
+        return tags + (("on",) if p["url"] in self.checked else ())
+
     def _insert_playlist(self, p):
-        box = "☑" if p["url"] in self.checked else "☐"
         count = "" if p.get("count") is None else str(p["count"])
-        image = self.tab.thumbs.get(p.get("image"), playlist_thumb_size)
+        image = self.image_for(p)
         kwargs = {"image": image} if image is not None else {}
         name = p["name"] or "(no name)"
         if not p.get("editable"):
             name += "  (read only)"
-        item = self.tree.insert("", "end", text=f" {box}  {name}", values=(count,),
-                                tags=() if p.get("editable") else ("readonly",), **kwargs)
+        item = self.tree.insert("", "end", text=f"  {name}", values=(count,), tags=self.tags_for(p), **kwargs)
         self.items[item] = p
 
     def refresh_images(self):
         for item, p in self.items.items():
-            image = self.tab.thumbs.get(p.get("image"), playlist_thumb_size)
-            if image is not None and not self.tree.item(item, "image"):
+            image = self.image_for(p)
+            if image is not None and str(self.tree.item(item, "image")) != str(image):
                 self.tree.item(item, image=image)
+
+    def image_for(self, p):
+        if p["url"] in self.checked:
+            return self.tab.thumbs.ticked(p.get("image"), playlist_thumb_size, *self.tab.tick_colors)
+        return self.tab.thumbs.get(p.get("image"), playlist_thumb_size)
 
     def _tree_click(self, event):
         item = self.tree.identify_row(event.y)
@@ -606,9 +650,9 @@ class PlatformPane(ttk.Frame):
 
     def _refresh_item(self, item):
         p = self.items[item]
-        box = "☑" if p["url"] in self.checked else "☐"
-        text = self.tree.item(item, "text")
-        self.tree.item(item, text=f" {box}" + text[2:], values=("" if p.get("count") is None else str(p["count"]),))
+        image = self.image_for(p)
+        self.tree.item(item, tags=self.tags_for(p), values=("" if p.get("count") is None else str(p["count"]),),
+                       image=image if image is not None else "")
 
     def _item_of(self, url):
         return next((i for i, p in self.items.items() if p["url"] == url), None)
@@ -915,6 +959,7 @@ class ManageTab(ttk.Frame):
         self.workers = {p: manage.Worker(p, lambda: app.config, app._manage_begin, app._manage_end, app._ui)
                         for p in platform_order}
         self._tip = None
+        self.tick_colors = ("#0078d4", "#ffffff")  # the tick badge: fill, ring (set_colors)
         self._drop_target = None
         self._shown = False
         self._drag_tip = None
@@ -952,8 +997,51 @@ class ManageTab(ttk.Frame):
         # a gap between the two sides
         self.panes["anghami"].configure(padding=(0, 0, 8, 0))
         self.panes["spotify"].configure(padding=(8, 0, 0, 0))
+        self.paned = panes
+        # the divider is dragged as a line and the sides resized once on release: resizing them live
+        # repaints every widget in both on each pixel, which is what made dragging it lag
+        panes.bind("<ButtonPress-1>", self._sash_press)
+        panes.bind("<B1-Motion>", self._sash_drag)
+        panes.bind("<ButtonRelease-1>", self._sash_release)
+        self._sash = None
         self._busy_count = 0
         self._tick_busy()
+
+    def _sash_press(self, event):
+        try:
+            hit = self.paned.identify(event.x, event.y)
+        except tk.TclError:
+            hit = ""
+        if hit == "":
+            return None
+        guide = tk.Toplevel(self)
+        guide.wm_overrideredirect(True)
+        guide.attributes("-topmost", True)
+        guide.configure(bg=self.tick_colors[0])
+        self._sash = {"guide": guide, "offset": event.x - self.paned.sashpos(0), "x": self.paned.sashpos(0)}
+        self._place_guide(self.paned.sashpos(0))
+        return "break"
+
+    def _place_guide(self, x):
+        paned = self.paned
+        low, high = 220, max(221, paned.winfo_width() - 220)  # neither side squeezed to nothing
+        x = max(low, min(high, x))
+        self._sash["x"] = x
+        self._sash["guide"].geometry(f"3x{paned.winfo_height()}+{paned.winfo_rootx() + x}+{paned.winfo_rooty()}")
+
+    def _sash_drag(self, event):
+        if self._sash is None:
+            return None
+        self._place_guide(event.x - self._sash["offset"])
+        return "break"
+
+    def _sash_release(self, event):
+        if self._sash is None:
+            return None
+        sash, self._sash = self._sash, None
+        sash["guide"].destroy()
+        self.paned.sashpos(0, sash["x"])
+        return "break"
 
     # ------------------------------------------------------------ helpers for the panes
 
@@ -1030,6 +1118,11 @@ class ManageTab(ttk.Frame):
         for pane in self.panes.values():
             pane.songs.set_colors(bg, fg, muted, border, select_bg, hover, selected_row)
             pane.tree.tag_configure("drop", background=select_bg, foreground=bg)
+            pane.tree.tag_configure("on", background=selected_row, font=("Segoe UI", 10, "bold"))
+        self.tick_colors = (select_bg, bg)
+        for pane in self.panes.values():
+            if pane.items:
+                pane.refresh_images()
         style = ttk.Style(self)
         style.configure("Placeholder.TEntry", foreground=muted)
 
@@ -1305,7 +1398,7 @@ class ManageTab(ttk.Frame):
             pane, item = self._drop_target
             if pane.tree.exists(item):
                 p = pane.items.get(item, {})
-                pane.tree.item(item, tags=() if p.get("editable") else ("readonly",))
+                pane.tree.item(item, tags=pane.tags_for(p) if p else ())
             self._drop_target = None
 
     def drag_over(self, source_pane, x_root, y_root, final, shift=False):

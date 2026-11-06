@@ -689,9 +689,11 @@ class ScrapifyApp:
             self.root.after_idle(self._do_layout_chrome)
 
     def _freeze_while_resizing(self, event):
-        # while an edge is dragged the pages keep their size and are laid out once on release: every
-        # sun valley widget redraws on each step otherwise, which is what made resizing lag. the
-        # window's grey shows in the new space meanwhile, like browsers do
+        # while an edge is dragged the pages are swapped for a picture of themselves and laid out
+        # once on release. windows repaints every widget in a window on each step of a resize, even
+        # ones whose size didn't change, and sun valley's widgets are slow to paint (~150 ms a step
+        # for a tab full of them); one picture paints in a few ms. the window's grey shows in the
+        # new space meanwhile, like browsers do
         if event.widget is not self.root:
             return
         size, self._root_size = getattr(self, "_root_size", None), (event.width, event.height)
@@ -702,9 +704,33 @@ class ScrapifyApp:
             return
         self._frozen = notebook.pack_info()
         x, y, w, h = notebook.winfo_x(), notebook.winfo_y(), notebook.winfo_width(), notebook.winfo_height()
+        cover = self._snapshot(notebook)
         notebook.pack_forget()
-        notebook.place(x=x, y=y, width=w, height=h)
+        if cover is not None:
+            cover.place(x=x, y=y)
+        else:  # no picture: frozen in place at its size, the older and slower way
+            notebook.place(x=x, y=y, width=w, height=h)
+        self._frozen_cover = cover
+        for widget in (self._logo, self._caption_buttons):
+            if widget is not None:
+                widget.lift()
         self.root.after(50, self._thaw_after_resizing)
+
+    def _snapshot(self, widget):
+        """a label showing what widget looks like on screen right now, or None"""
+        try:
+            from PIL import ImageGrab, ImageTk
+            x, y = widget.winfo_rootx(), widget.winfo_rooty()
+            w, h = widget.winfo_width(), widget.winfo_height()
+            image = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
+            if image.size != (w, h):
+                return None
+            photo = ImageTk.PhotoImage(image, master=self.root)
+        except Exception:
+            return None
+        label = tk.Label(self.root, image=photo, borderwidth=0, highlightthickness=0, padx=0, pady=0)
+        label.image = photo
+        return label
 
     def _thaw_after_resizing(self):
         if self.chrome.sizing:
@@ -712,8 +738,13 @@ class ScrapifyApp:
             return
         info, self._frozen = self._frozen, None
         info.pop("in", None)
+        cover, self._frozen_cover = getattr(self, "_frozen_cover", None), None
         self.notebook.place_forget()
         self.notebook.pack(**info)
+        if cover is not None:
+            # the picture stays until the pages have been laid out at the new size underneath it
+            self.root.update_idletasks()
+            cover.destroy()
         self._layout_chrome()
 
     def _measure_tabs(self, tab_row):
