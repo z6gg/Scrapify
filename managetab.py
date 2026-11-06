@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tkinter import font as tkfont
 from tkinter import ttk
 
+import accent as gradient
 import manage
 from browsersessioncommon import AuthError
 from matcher import normalize
@@ -135,7 +136,12 @@ class Thumbs:
         x0, y0 = big - d, big - d
         draw.ellipse((x0, y0, big - 1, big - 1), fill=ring)
         inset = max(scale, int(d * 0.1))
-        draw.ellipse((x0 + inset, y0 + inset, big - 1 - inset, big - 1 - inset), fill=accent)
+        badge = (x0 + inset, y0 + inset, big - 1 - inset, big - 1 - inset)
+        fill = gradient.gradient_image(badge[2] - badge[0] + 1, badge[3] - badge[1] + 1)
+        disc = Image.new("L", fill.size, 0)
+        ImageDraw.Draw(disc).ellipse((0, 0, fill.size[0] - 1, fill.size[1] - 1), fill=255)
+        image.paste(fill, (badge[0], badge[1]), disc)
+        draw = ImageDraw.Draw(image)
         cx, cy, r = x0 + d / 2, y0 + d / 2, d / 2 - inset
         points = [(cx - r * 0.5, cy + r * 0.02), (cx - r * 0.12, cy + r * 0.4), (cx + r * 0.52, cy - r * 0.38)]
         draw.line(points, fill="white", width=max(scale, int(r * 0.32)), joint="curve")
@@ -185,8 +191,8 @@ class SongList(ttk.Frame):
         self.top = 0
         self.empty_text = ""
         self.show_playlist = False
-        self.colors = {"bg": "#ffffff", "fg": "#1c1c1c", "muted": "#6b6b6b", "select_bg": "#005fb8",
-                       "border": "#e5e5e5", "hover": "#f0f0f0", "selected_row": "#dbe9f7"}
+        self.colors = {"bg": "#ffffff", "fg": "#1c1c1c", "muted": "#6b6b6b", "select_bg": "#7a3fd6",
+                       "border": "#e5e5e5", "hover": "#f0f0f0", "selected_row": "#ece4f8"}
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, takefocus=1)
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.yview)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -361,9 +367,12 @@ class SongList(ttk.Frame):
             mid = y + song_row_height // 2
             # the box
             bx = 10
-            c.create_rectangle(bx, mid - check_size // 2, bx + check_size, mid + check_size // 2,
-                               outline=p["select_bg"] if picked else p["muted"], width=1,
-                               fill=p["select_bg"] if picked else "")
+            if picked:
+                c.create_image(bx, mid - check_size // 2, anchor="nw",
+                               image=gradient.filled_box(self, check_size + 1, check_size + 1, 2))
+            else:
+                c.create_rectangle(bx, mid - check_size // 2, bx + check_size, mid + check_size // 2,
+                                   outline=p["muted"], width=1, fill="")
             if picked:
                 c.create_line(bx + 4, mid, bx + 7, mid + 3, bx + 12, mid - 3, fill=p["bg"], width=2)
             # the cover
@@ -397,8 +406,8 @@ class SongList(ttk.Frame):
                           fill=p["muted"], font=self.artist_font, anchor="w")
         if self.insert_at is not None:
             y = self.insert_at * song_row_height - self.top
-            c.create_line(6, y, width - 6, y, fill=p["select_bg"], width=3)
-            c.create_oval(2, y - 4, 10, y + 4, fill=p["select_bg"], outline="")
+            gradient.hline(c, 6, width - 6, y, 3)
+            c.create_oval(2, y - 4, 10, y + 4, fill=gradient.hex_at(0), outline="")
 
     # ------------------------------------------------------------ mouse and keys
 
@@ -549,7 +558,7 @@ class PlatformPane(ttk.Frame):
         self.tree.bind("<Delete>", lambda e: self._on_current(self.tab.delete_playlist))
         self.current = None  # the playlist last clicked, for F2 and Delete
         self.tree.tag_configure("readonly", foreground="#8a8a8a")
-        self.tree.tag_configure("drop", background="#3a7bd5", foreground="#ffffff")
+        self.tree.tag_configure("drop", background=gradient.SOLID, foreground="#ffffff")
 
         songs_head = ttk.Frame(self)
         songs_head.pack(fill="x", pady=(10, 4))
@@ -985,7 +994,7 @@ class ShortcutsPage(ttk.Frame):
         super().__init__(parent)
         self.on_close = on_close
         self.colors = {"page": "#fafafa", "card": "#ffffff", "fg": "#1c1c1c", "muted": "#6b6b6b",
-                       "border": "#e5e5e5", "accent": "#005fb8", "key": "#f3f3f3", "key_edge": "#d0d0d0",
+                       "border": "#e5e5e5", "accent": "#7a3fd6", "key": "#f3f3f3", "key_edge": "#d0d0d0",
                        "key_shadow": "#c4c4c4"}
         self.title_font = tkfont.Font(family="Segoe UI Variable Display", size=18, weight="bold")
         self.section_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
@@ -1033,10 +1042,6 @@ class ShortcutsPage(ttk.Frame):
             w = self._token_width(token)
             if token in self.joiners:
                 c.create_text(x + w / 2, mid, text=token, fill=p["muted"], font=self.small_font)
-            elif token in self.mouse:
-                # mouse actions are pills in the accent color, so they read apart from keys
-                self._round_rect(x, mid - 12, x + w, mid + 12, 12, fill="", outline=p["accent"], width=1.5)
-                c.create_text(x + w / 2, mid, text=token, fill=p["accent"], font=self.key_font)
             else:
                 # a keycap: a darker edge under it, like the key's side
                 self._round_rect(x, mid - 11, x + w, mid + 14, 6, fill=p["key_shadow"], outline="")
@@ -1105,8 +1110,7 @@ class ShortcutsPage(ttk.Frame):
         placed, height = self.layout(width)
         for (title, rows), x, y, w, h, keys_w in placed:
             self._round_rect(x, y, x + w, y + h, 10, fill=p["card"], outline=p["border"], width=1)
-            c.create_text(x + self.pad, y + self.pad, text=title.upper(), anchor="nw", fill=p["accent"],
-                          font=self.section_font)
+            gradient.text(c, x + self.pad, y + self.pad, title.upper(), self.section_font, anchor="nw")
             ry = y + self.pad + 24
             inner_w = w - 2 * self.pad
             for i, (keys, text) in enumerate(rows):
@@ -1188,7 +1192,7 @@ class ManageTab(ttk.Frame):
         self.workers = {p: manage.Worker(p, lambda: app.config, app._manage_begin, app._manage_end, app._ui)
                         for p in platform_order}
         self._tip = None
-        self.tick_colors = ("#0078d4", "#ffffff")  # the tick badge: fill, ring (set_colors)
+        self.tick_colors = ("#7a3fd6", "#ffffff")  # the tick badge: fill, ring (set_colors)
         self._drop_target = None
         self._shown = False
         self._drag_tip = None
@@ -1345,10 +1349,10 @@ class ManageTab(ttk.Frame):
 
     def set_colors(self, dark, bg, fg, muted, border, select_bg):
         hover = "#2d2d2d" if dark else "#f2f2f2"
-        selected_row = "#203a52" if dark else "#dceaf8"
+        selected_row = "#33284d" if dark else "#ece4f8"
         for pane in self.panes.values():
             pane.songs.set_colors(bg, fg, muted, border, select_bg, hover, selected_row)
-            pane.tree.tag_configure("drop", background=select_bg, foreground=bg)
+            pane.tree.tag_configure("drop", background=gradient.SOLID, foreground="#ffffff")
             pane.tree.tag_configure("on", background=selected_row, font=("Segoe UI", 10, "bold"))
         self.tick_colors = (select_bg, bg)
         page = self.app._colors.get("bg", "#fafafa") if isinstance(getattr(self.app, "_colors", None), dict) else bg
@@ -1729,10 +1733,10 @@ class ManageTab(ttk.Frame):
             tip.wm_overrideredirect(True)
             tip.attributes("-topmost", True)
             p = self.app._colors
-            self._drag_text = tk.Label(tip, bg=p.get("select_bg", "#0078d4"), fg=p.get("field_bg", "#ffffff"),
-                                       padx=8, pady=3, font=("Segoe UI", 9, "bold"))
+            self._drag_text = tk.Label(tip, bd=0, padx=0, pady=0, bg=p.get("bg", "#1c1c1c"))
             self._drag_text.pack()
-        self._drag_text.configure(text=text)
+        self._drag_text.image = gradient.tip_image(self, text)
+        self._drag_text.configure(image=self._drag_text.image)
         self._drag_tip.geometry(f"+{x_root + 16}+{y_root + 12}")
 
     def _clear_drop_target(self):

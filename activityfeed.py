@@ -10,7 +10,12 @@ import time
 import tkinter as tk
 from tkinter import font as tkfont
 
+import accent
 from matcher import normalize
+
+# tags that were the stock blue, now the logo's green to purple
+gradient_tags = {"link", "icon_version", "icon_kept", "chip_version", "chip_kept"}
+gradient_steps = 24
 
 # icon, what hovering it says, sort order in a card (problems first)
 statuses = {
@@ -33,11 +38,11 @@ rows_shown = 6  # per card until "Show more"
 runs_kept = 30
 
 palette = {
-    False: {"added": "#0f7b0f", "version": "#005fb8", "kept": "#005fb8", "missing": "#9d5d00", "unsure": "#7a3fd1",
-            "error": "#c42b1c", "removed": "#6b6b6b", "link": "#005fb8", "button": "#e9e9e9",
+    False: {"added": "#0f7b0f", "version": "#7a3fd6", "kept": "#7a3fd6", "missing": "#9d5d00", "unsure": "#7a3fd1",
+            "error": "#c42b1c", "removed": "#6b6b6b", "link": "#7a3fd6", "button": "#e9e9e9",
             "button_hover": "#dcdcdc", "card_line": "#e5e5e5", "tip_bg": "#f9f9f9", "tip_border": "#d0d0d0"},
-    True: {"added": "#6ccb5f", "version": "#57c8ff", "kept": "#57c8ff", "missing": "#f2c661", "unsure": "#c6a7ff",
-           "error": "#ff99a4", "removed": "#9d9d9d", "link": "#57c8ff", "button": "#383838",
+    True: {"added": "#6ccb5f", "version": "#a77bf0", "kept": "#a77bf0", "missing": "#f2c661", "unsure": "#c6a7ff",
+           "error": "#ff99a4", "removed": "#9d9d9d", "link": "#a77bf0", "button": "#383838",
            "button_hover": "#454545", "card_line": "#3a3a3a", "tip_bg": "#2b2b2b", "tip_border": "#4a4a4a"},
 }
 
@@ -161,7 +166,7 @@ class ActivityFeed(tk.Frame):
         t.tag_configure("sep", foreground=muted)
         t.tag_configure("mtitle", foreground=fg, font=f["small"])
         t.tag_configure("martist", foreground=muted, font=f["small"])
-        t.tag_configure("link", foreground=c.get("link", "#005fb8"), font=f["small"], lmargin1=28, spacing1=3)
+        t.tag_configure("link", foreground=c.get("link", "#7a3fd6"), font=f["small"], lmargin1=28, spacing1=3)
         t.tag_configure("error_line", foreground=c.get("error", "#c42b1c"), font=f["small"], lmargin1=6,
                         lmargin2=28, spacing1=3)
         t.tag_configure("pending_head", font=f["big"], foreground=fg, spacing1=2)
@@ -174,6 +179,9 @@ class ActivityFeed(tk.Frame):
             t.tag_configure(f"chip_{status}", foreground=c.get(status, fg), font=f["small"])
             t.tag_bind(f"icon_{status}", "<Enter>", lambda e, s=status: self._show_tip(e, statuses[s][1]))
             t.tag_bind(f"icon_{status}", "<Leave>", lambda e: self.tooltip.hide())
+        for step in range(gradient_steps):  # created last, so above the tags they sit on
+            t.tag_configure(f"grad_{step}", foreground=accent.hex_at(step / (gradient_steps - 1)))
+            t.tag_raise(f"grad_{step}")
         t.tag_bind("link", "<Enter>", lambda e: (t.configure(cursor="hand2"),
                                                  t.tag_configure("link", underline=True)))
         t.tag_bind("link", "<Leave>", lambda e: (t.configure(cursor="arrow"),
@@ -280,6 +288,13 @@ class ActivityFeed(tk.Frame):
         t.yview_moveto(top)
 
     def _insert(self, text, *tags):
+        if text.strip() and any(t in gradient_tags for t in tags):
+            # the logo's green to purple along the text, a letter at a time (a tag has one color)
+            n = len(text)
+            for i, ch in enumerate(text):
+                step = round(i / max(1, n - 1) * (gradient_steps - 1))
+                self.text.insert("end", ch, tags + (f"grad_{step}",))
+            return
         self.text.insert("end", text, tags)
 
     def _render_note(self, note, standalone=False, first=False):

@@ -125,11 +125,12 @@ class Chrome:
         A dialog's whole title bar: its icon, its title and a close button, on a strip that
         moves the window. Pack it first, at the top, before anything else goes in.
         """
-        bar = tk.Frame(parent, bd=0, highlightthickness=0, height=self.px(button_height + 2))
+        bar = tk.Frame(parent, bd=0, highlightthickness=0, height=self.px(button_height + 8))  # the close button's frame sits 4px from the top and the right
         bar.pack_propagate(False)
         self._painted.append(bar)
         buttons = self.caption_buttons(bar, names=("close",))
-        buttons.pack(side="right", padx=(0, self.px(4)))
+        # its rounded frame is inset from the button's cell, so the cell sits closer in than the 4px
+        buttons.pack(side="right", padx=(0, max(0, self.px(4) - (self.px(button_width) - self.px(pill_width)) // 2)))
         if icon is not None:
             self.logo(bar, icon).pack(side="left", padx=(self.px(12), 0))
         text = tk.Label(bar, text=title, bd=0, padx=self.px(8 if icon is not None else 12), anchor="w",

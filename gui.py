@@ -113,15 +113,15 @@ cap_height_ratio = 0.7  # segoe ui's capitals are 0.7 of its size
 page_radius = 8  # the pages' rounded corners, at 100%
 # tk (not ttk) widgets don't follow the ttk theme, these match sun valley
 sv_colors = {
-    False: {"bg": "#fafafa", "fg": "#1c1c1c", "field_bg": "#ffffff", "muted": "#6b6b6b", "select_bg": "#005fb8",
+    False: {"bg": "#fafafa", "fg": "#1c1c1c", "field_bg": "#ffffff", "muted": "#6b6b6b", "select_bg": "#7a3fd6",
             "border": "#e5e5e5", "hover": "#d4d4d4",
             "chrome": "#e7e7e7", "tab_hover": "#f4f4f4"},
-    True: {"bg": "#1c1c1c", "fg": "#fafafa", "field_bg": "#262626", "muted": "#9d9d9d", "select_bg": "#57c8ff",
+    True: {"bg": "#1c1c1c", "fg": "#fafafa", "field_bg": "#262626", "muted": "#9d9d9d", "select_bg": "#7a3fd6",
            "border": "#3a3a3a", "hover": "#454545",
            "chrome": "#2f2f2f", "tab_hover": "#292929"},
 }
 dark_colors = {"bg": "#1e1e1e", "fg": "#e6e6e6", "field_bg": "#2b2b2b", "button_bg": "#3c3c3c",
-               "button_active": "#4a4a4a", "select_bg": "#3d6fb4", "select_fg": "#ffffff", "muted": "#9a9a9a",
+               "button_active": "#4a4a4a", "select_bg": "#5b3aa8", "select_fg": "#ffffff", "muted": "#9a9a9a",
                "border": "#555555"}
 browser_flag_labels = (
     ("disable_gpu", "Disable GPU acceleration"),
@@ -848,11 +848,12 @@ class ScrapifyApp:
         # pixel rows: something n rows tall is centered on line when its top is line - (n - 1) / 2
         top_for = lambda n: math.floor(line - (n - 1) / 2 + 0.5)
         size = chrome.px(logo_size)
+        logo_x = gap + chrome.px(3)  # the logo sits a little further in than the buttons' margin
         ink_left = getattr(self, "_logo_ink_left", 0)
         logo_ink = getattr(self, "_logo_ink_right", size - 1) - ink_left + 1
         if self._logo is not None:
             # its artwork, not its transparent edge, starts at the margin
-            self._logo.place(x=gap - ink_left, y=top_for(self._logo.winfo_reqheight()))
+            self._logo.place(x=logo_x - ink_left, y=top_for(self._logo.winfo_reqheight()))
             self._logo.lift()
         else:
             logo_ink = 0
@@ -871,9 +872,8 @@ class ScrapifyApp:
         _room, font, name_w = self._name_fit
         # its capitals' middle on the line, like the tab labels' letters
         cap = cap_height_ratio * int(font.cget("size")) * float(self.root.tk.call("tk", "scaling"))
-        # it ends where the window buttons' width does, measured from the logo, so the tabs have the
-        # same space on both sides
-        self._name.place(x=max(gap + logo_ink + chrome.px(7), gap + group - name_w),
+        # right after the logo: its artwork ends, then a 14px gap to the name
+        self._name.place(x=logo_x + logo_ink + chrome.px(14) - chrome.px(1),
                          y=math.floor(line - font.metrics("ascent") + cap / 2 + 0.5))
         self._name.lift()
         # the close button's rounded frame ends one gap from the window's edge, like the logo starts
@@ -2777,6 +2777,10 @@ class ScrapifyApp:
         self.root.configure(bg=p["chrome"] if chrome else p["bg"])
         style.configure("Muted.TLabel", foreground=p["muted"])
         style.configure("Treeview", rowheight=28)
+        self._gradient_buttons()
+        self._gradient_accents(dark)
+        self._animate_bars(dark)
+        self._refresh_fields()
         style.configure("TLabelframe.Label", font=("Segoe UI Variable Text", 10, "bold"))
         self.feed.set_colors(dark, bg=p["field_bg"], fg=p["fg"], muted=p["muted"], border=p["border"],
                              select_bg=p["select_bg"])
@@ -2825,6 +2829,254 @@ class ScrapifyApp:
         height = top + linespace + bottom
         return {"body": body, "pill_top": pill_top, "pill_bottom": height - pill_top - pill,
                 "text_top": top, "text_bottom": bottom, "height": height}
+
+    def _gradient_buttons(self):
+        """The filled main-action buttons as a left-to-right gradient of the logo's two colors.
+
+        ttk tiles the middle of a button's image instead of stretching it, which would repeat the
+        gradient, so each button gets images made at its exact size (see _gradient_for)."""
+        if sv_ttk is None:
+            return
+        style = ttk.Style(self.root)
+        style.configure("Accent.TButton", foreground="#ffffff")
+        style.map("Accent.TButton", foreground=[("pressed", "#e6dcff"), ("disabled", "#bdbdbd")])
+        if not getattr(self, "_gradient_bound", False):
+            self._gradient_bound = True
+            self.root.bind_class("TButton", "<Configure>", self._on_button_configure, add="+")
+            for cls in ("TEntry", "TSpinbox"):
+                self.root.bind_class(cls, "<Configure>", self._on_field_configure, add="+")
+        for widget in self._all_widgets(self.root):  # buttons that already exist, after a theme switch
+            if isinstance(widget, ttk.Button):
+                self._on_button_configure(None, widget)
+
+    def _gradient_accents(self, dark):
+        """Recolors sun valley's blue in its checkboxes, radio buttons, switches, focus lines and
+        the like to the same green to purple gradient, by repainting the theme's sprites in place."""
+        if sv_ttk is None:
+            return
+        theme = "sv_dark" if dark else "sv_light"
+        done = self.__dict__.setdefault("_accent_done", set())
+        style = ttk.Style(self.root)
+        try:
+            style.configure("TEntry", selectbackground="#7a3fd6", selectforeground="#ffffff")
+            style.configure("TSpinbox", selectbackground="#7a3fd6", selectforeground="#ffffff")
+            style.configure("TCombobox", selectbackground="#7a3fd6", selectforeground="#ffffff")
+            # sun valley's blue selection: rows in lists, a read-only combobox's text, the menus
+            style.map("Treeview", background=[("selected", "#7a3fd6")], foreground=[("selected", "#ffffff")])
+            style.map("TCombobox", selectbackground=[("readonly", "#7a3fd6")], selectforeground=[("readonly", "#ffffff")])
+            for option, value in (("*selectBackground", "#7a3fd6"), ("*selectForeground", "#ffffff"),
+                                  ("*inactiveSelectBackground", "#7a3fd6"), ("*Menu.activeBackground", "#7a3fd6"),
+                                  ("*Menu.activeForeground", "#ffffff"), ("*Listbox.selectBackground", "#7a3fd6")):
+                self.root.option_add(option, value)
+        except tk.TclError:
+            pass
+        if theme in done:
+            return
+        done.add(theme)
+        try:
+            from PIL import Image, ImageTk
+            tcl = self.root.tk
+            sheet = Image.open(os.path.join(os.path.dirname(sv_ttk.__file__), "theme",
+                                            f"spritesheet_{'dark' if dark else 'light'}.png")).convert("RGBA")
+            accent_span = 168 if dark else 184  # the accent's blue minus its red, how "accent" a pixel is
+            base = (87, 200, 255) if dark else (0, 95, 184)
+            left, right, solid = (30, 190, 100), (140, 45, 235), (140, 45, 235)
+
+            def recolor(piece, color_at):
+                """a copy of piece with its accent blue replaced by color_at(x / width)"""
+                piece = piece.copy()
+                pixels = piece.load()
+                w, h = piece.size
+                changed = False
+                for py in range(h):
+                    for px in range(w):
+                        r, g, b, a = pixels[px, py]
+                        p = min(1.0, max(0.0, (b - r) / accent_span))
+                        if p < 0.05 or a == 0:
+                            continue
+                        c = color_at(px / max(1, w - 1))
+                        pixels[px, py] = tuple(max(0, min(255, int(v + p * (c[k] - base[k]))))
+                                               for k, v in enumerate((r, g, b))) + (a,)
+                        changed = True
+                return piece if changed else None
+
+            images = dict(zip(*[iter(tcl.splitlist(tcl.call("array", "get", f"ttk::theme::{theme}::I")))] * 2))
+            info = tcl.splitlist(tcl.call("set", "::spriteinfo"))
+            sprites = {}
+            self.__dict__.setdefault("_field_sprites", {})[theme] = (sprites, recolor)
+            for i in range(0, len(info), 5):
+                name, x, y, w, h = info[i], *(int(v) for v in info[i + 1:i + 5])
+                if name not in images or name.startswith(("card", "notebook", "heading")):
+                    continue
+                piece = sheet.crop((x, y, x + w, y + h))
+                if name.startswith("textbox"):
+                    sprites[name] = piece
+                if name == "progressbar-bar-hor":
+                    # the bar fades green to purple and back, one frame per step of the loop
+                    steps = 72
+                    frames = []
+                    for k in range(steps):
+                        t = (1 - math.cos(2 * math.pi * k / steps)) / 2
+                        c = tuple(left[j] + (right[j] - left[j]) * t for j in range(3))
+                        frames.append(ImageTk.PhotoImage(recolor(piece, lambda _t: c) or piece, master=self.root))
+                    self.__dict__.setdefault("_bar_frames", {})[theme] = (images[name], frames)
+                    tcl.call(images[name], "copy", str(frames[0]), "-compositingrule", "set")
+                    continue
+                flat = name.startswith(("textbox", "progressbar", "tab"))  # tiled, so one color all along
+                colored = recolor(piece, (lambda _t: solid) if flat else
+                                  (lambda t: [left[j] + (right[j] - left[j]) * t for j in range(3)]))
+                if colored is not None:
+                    photo = ImageTk.PhotoImage(colored, master=self.root)
+                    tcl.call(images[name], "copy", str(photo), "-compositingrule", "set")
+        except Exception:
+            self.log.debug("accent recolor failed", exc_info=True) if hasattr(self, "log") else None
+
+    def _on_field_configure(self, event):
+        widget = event.widget
+        try:
+            base = widget.winfo_class()
+            current = str(widget.cget("style"))
+            if current not in ("", base) and not current.startswith("GField"):
+                return
+            w, h = widget.winfo_width(), widget.winfo_height()
+            if w < 24 or h < 16:
+                return
+            name = self._field_style_for(base, w, h)
+            if name and name != current:
+                widget.configure(style=name)
+        except Exception:
+            pass
+
+    def _refresh_fields(self):
+        # entries that exist already, after a theme switch took their per size elements away
+        for widget in self._all_widgets(self.root):
+            if widget.winfo_class() in ("TEntry", "TSpinbox"):
+                self._on_field_configure(type("E", (), {"widget": widget})())
+
+    def _field_style_for(self, base, w, h):
+        """Entry/spinbox style with a w x h image set, so the focus line can run green to purple
+        across the whole width (ttk would tile a small image and repeat the gradient)."""
+        theme = "sv_dark" if getattr(self, "_bar_dark", True) else "sv_light"
+        entry = getattr(self, "_field_sprites", {}).get(theme)
+        if entry is None:
+            return None
+        sprites, recolor = entry
+        style = ttk.Style(self.root)
+        name, element = f"GField{w}x{h}.{base}", f"GField{w}x{h}.field"
+        if element in style.element_names():
+            return name
+        from PIL import Image, ImageTk
+        b = 5
+
+        def nine(piece):
+            sw, sh = piece.size
+            out = Image.new("RGBA", (w, h))
+            xs, ys = (0, b, sw - b, sw), (0, b, sh - b, sh)
+            xd, yd = (0, b, w - b, w), (0, b, h - b, h)
+            for i in range(3):
+                for j in range(3):
+                    part = piece.crop((xs[i], ys[j], xs[i + 1], ys[j + 1]))
+                    size = (xd[i + 1] - xd[i], yd[j + 1] - yd[j])
+                    if size[0] > 0 and size[1] > 0:
+                        out.paste(part.resize(size, Image.NEAREST), (xd[i], yd[j]))
+            return out
+
+        def photo(sprite, gradient=False):
+            image = nine(sprites[sprite])
+            if gradient:
+                left, right = (30, 190, 100), (140, 45, 235)
+                image = recolor(image, lambda t: [left[k] + (right[k] - left[k]) * t for k in range(3)]) or image
+            return ImageTk.PhotoImage(image, master=self.root)
+
+        images = self.__dict__.setdefault("_gradient_images", [])
+        rest, hover, focus, dis, err = (photo("textbox-rest"), photo("textbox-hover"), photo("textbox-focus", True),
+                                        photo("textbox-dis"), photo("textbox-error"))
+        images.extend((rest, hover, focus, dis, err))
+        style.element_create(element, "image", rest, ("invalid", err), ("disabled", dis), ("focus", focus),
+                             ("hover", hover), border=b, sticky="nsew")
+
+        def swap(node):
+            return [(element if n.endswith(".field") else n,
+                     {k: (swap(v) if k == "children" else v) for k, v in opts.items()}) for n, opts in node]
+        style.layout(name, swap(style.layout(base)))
+        return name
+
+    def _animate_bars(self, dark, step=0):
+        """Steps the progress bars' color around the green to purple loop, a frame every 45 ms."""
+        theme = "sv_dark" if dark else "sv_light"
+        self._bar_dark = dark
+        if getattr(self, "_bar_timer", None) is None:
+            self._bar_step = 0
+            self._bar_timer = self.root.after(45, self._tick_bars)
+
+    def _tick_bars(self):
+        self._bar_timer = None
+        try:
+            if self.root.state() not in ("withdrawn", "iconic") and self.root.winfo_viewable():
+                entry = getattr(self, "_bar_frames", {}).get("sv_dark" if self._bar_dark else "sv_light")
+                if entry is not None:
+                    image, frames = entry
+                    self._bar_step = (self._bar_step + 1) % len(frames)
+                    self.root.tk.call(image, "copy", str(frames[self._bar_step]), "-compositingrule", "set")
+            self._bar_timer = self.root.after(45, self._tick_bars)
+        except tk.TclError:
+            pass  # the window is gone
+
+    def _all_widgets(self, parent):
+        for child in parent.winfo_children():
+            yield child
+            yield from self._all_widgets(child)
+
+    def _on_button_configure(self, event, widget=None):
+        widget = widget or event.widget
+        try:
+            current = str(widget.cget("style"))
+            if current != "Accent.TButton" and not current.endswith(".Accent.TButton"):
+                return
+            w, h = widget.winfo_width(), widget.winfo_height()
+            if w < 16 or h < 16:
+                return
+            name = self._gradient_for(w, h)
+            if name != current:
+                widget.configure(style=name)
+        except Exception:
+            pass
+
+    def _gradient_for(self, w, h):
+        """Name of an Accent.TButton style drawn as a w x h gradient (made once per size and theme)."""
+        name = f"Gradient{w}x{h}.Accent.TButton"
+        style = ttk.Style(self.root)
+        element = f"Gradient{w}x{h}.button"
+        if element in style.element_names():
+            return name
+        from PIL import Image, ImageDraw, ImageTk
+        left, right = (30, 190, 100), (140, 45, 235)  # the logo's green and purple
+        radius, big = 4, 4
+
+        def button_image(shade=0.0, alpha=255, grey=False):
+            row = Image.new("RGBA", (w, 1))
+            for x in range(w):
+                t = x / max(1, w - 1)
+                c = [left[i] + (right[i] - left[i]) * t for i in range(3)]
+                if grey:
+                    c = [sum(c) / 3] * 3
+                c = [int(v + shade * ((255 - v) if shade > 0 else v)) for v in c]
+                row.putpixel((x, 0), (*c, 255))
+            fill = row.resize((w * big, h * big), Image.NEAREST)
+            mask = Image.new("L", (w * big, h * big), 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, w * big - 1, h * big - 1), radius=radius * big, fill=alpha)
+            fill.putalpha(mask)
+            return ImageTk.PhotoImage(fill.resize((w, h), Image.LANCZOS), master=self.root)
+
+        images = self.__dict__.setdefault("_gradient_images", [])
+        rest, hover, pressed, disabled = (button_image(), button_image(0.12), button_image(-0.18),
+                                          button_image(alpha=90, grey=True))
+        images.extend((rest, hover, pressed, disabled))
+        style.element_create(element, "image", rest, ("disabled", disabled), ("pressed", pressed),
+                             ("active", hover), border=radius, sticky="nsew")
+        style.layout(name, [(element, {"sticky": "nsew", "children": [
+            ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": "nsew"})]})]})])
+        return name
 
     def _rounded_notebook(self, dark):
         """The built app's tab row and pages: pages on a rounded panel, tabs as rounded rectangles.
@@ -2919,9 +3171,9 @@ class ScrapifyApp:
             style.theme_use(self._native_theme)
             style.configure("Muted.TLabel", foreground=muted_gray)
             self.feed.set_colors(False, bg="SystemWindow", fg="SystemWindowText", muted=muted_gray,
-                                 border="SystemButtonShadow", select_bg="SystemHighlight")
+                                 border="SystemButtonShadow", select_bg="#7a3fd6")
             self.manage.set_colors(False, bg="#ffffff", fg="#1c1c1c", muted=muted_gray, border="#d9d9d9",
-                                   select_bg="#0078d4")
+                                   select_bg="#7a3fd6")
             return
         # windows' native themes ignore color overrides, clam honors them
         p = dark_colors
@@ -3161,8 +3413,13 @@ class _ThemedMessages:
         glyph, color = {"info": ("", app._colors.get("select_bg")), "question": ("", app._colors.get("select_bg")),
                         "warning": ("", "#c19c00"), "error": ("", "#c42b1c")}[kind]
         icon_font = app.chrome.icon_font if app.chrome else "Segoe MDL2 Assets"
-        tk.Label(row, text=glyph, font=(icon_font, 20), fg=color, bg=app._colors["bg"], bd=0).pack(
-            side="left", anchor="n", padx=(0, 14), pady=(2, 0))
+        icon = tk.Label(row, text=glyph, font=(icon_font, 20), fg=color, bg=app._colors["bg"], bd=0)
+        if kind in ("info", "question"):
+            picture = _gradient_glyph(row, glyph, icon_font, 20)
+            if picture is not None:  # the logo's green to purple instead of the accent blue
+                icon.configure(image=picture, text="")
+                icon.image = picture
+        icon.pack(side="left", anchor="n", padx=(0, 14), pady=(2, 0))
         ttk.Label(row, text=message or "", wraplength=400, justify="left").pack(side="left", anchor="w", fill="x")
         app._show_dialog(dialog)
         dialog.wait_window()
@@ -3172,6 +3429,37 @@ class _ThemedMessages:
             except tk.TclError:
                 pass
         return answer["value"]
+
+
+def _gradient_glyph(widget, glyph, icon_font, points):
+    """An icon-font glyph drawn in the logo's green to purple, as an image; None if it can't be"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont, ImageTk
+        fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        name = "SegoeIcons.ttf" if icon_font == "Segoe Fluent Icons" else "segmdl2.ttf"
+        size = round(points * float(widget.tk.call("tk", "scaling")))
+        big = 4
+        font = ImageFont.truetype(os.path.join(fonts, name), size * big)
+        left, top, right, bottom = font.getbbox(glyph)
+        w, h = size * big, size * big
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).text((0, 0), glyph, font=font, fill=255)
+        box = mask.getbbox()
+        if box is None:
+            return None
+        ink = box[2] - box[0]
+        gradient = Image.new("RGBA", (w, h))
+        pixels = gradient.load()
+        green, purple = (30, 190, 100), (140, 45, 235)
+        for x in range(w):
+            t = min(1.0, max(0.0, (x - box[0]) / max(1, ink)))
+            colour = tuple(int(green[i] + (purple[i] - green[i]) * t) for i in range(3)) + (255,)
+            for y in range(h):
+                pixels[x, y] = colour
+        gradient.putalpha(mask)
+        return ImageTk.PhotoImage(gradient.resize((size, size), Image.LANCZOS), master=widget)
+    except Exception:
+        return None
 
 
 def _use_themed_messages(app):
