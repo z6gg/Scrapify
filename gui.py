@@ -1248,7 +1248,7 @@ class ScrapifyApp:
         self.sync_direction_var.set(self.config["sync_direction"])
         self.pause_processes_var.set(", ".join(self.config["pause_while_running"]))
         for key, var in self.config_toggles.items():
-            var.set(self.config.get(key, False))
+            var.set(self.config.get(key, sync_main.default_config.get(key, False)))
 
     def _refresh_session_status(self):
         for platform, var in self.session_vars.items():
@@ -1848,7 +1848,7 @@ class ScrapifyApp:
         )
         for title, text, label, key in toggles:
             box = self._section(frame, title, text)
-            var = self.config_toggles[key] = tk.BooleanVar(value=self.config.get(key, False))
+            var = self.config_toggles[key] = tk.BooleanVar(value=self.config.get(key, sync_main.default_config.get(key, False)))
             check = ttk.Checkbutton(box, text=label, variable=var, command=self._toggle_setting(var, key))
             check.pack(anchor="w", padx=8, pady=(4, 8))
             if key == "debug_dumps":
