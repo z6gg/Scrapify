@@ -927,7 +927,8 @@ class ScrapifyApp:
         while name in taken:
             name, n = f"{base} ({n})", n + 1
         pair = self._pair_dialog({"name": name, "anghami_playlist_url": anghami["url"],
-                                  "spotify_playlist_url": spotify["url"]}, title="Add playlist pair")
+                                  "spotify_playlist_url": spotify["url"]}, title="Add playlist pair",
+                                 note=False)
         if pair:
             self.config["playlist_pairs"].append(pair)
             self._save_config()
@@ -1146,13 +1147,13 @@ class ScrapifyApp:
             return None
         return self.pairs_tree.index(selection[0])
 
-    def _pair_dialog(self, initial=None, title=None):
+    def _pair_dialog(self, initial=None, title=None, note=True):
         initial = initial or {}
         dialog = tk.Toplevel(self.root)
         dialog.title(title or ("Edit playlist pair" if initial else "Add playlist pair"))
         dialog.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
+        dialog.transient(self.root)  # before _decorate: see there
         self._decorate(dialog, dialog.title())
-        dialog.transient(self.root)
         dialog.grab_set()
         dialog_root = dialog
         dialog = ttk.Frame(dialog_root)  # the fields, under the title bar
@@ -1164,9 +1165,10 @@ class ScrapifyApp:
                                             ("anghami", "Anghami playlist URL"))):
             ttk.Label(dialog, text=label + ":").grid(row=row, column=0, sticky="w", padx=8, pady=6)
             ttk.Entry(dialog, textvariable=fields[key], width=48).grid(row=row, column=1, padx=8, pady=6)
-        ttk.Label(dialog, text="Note: if you leave a playlist link empty, one will be created for you.",
-                  style="Muted.TLabel", wraplength=480, justify="left").grid(
-            row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
+        if note:  # not when both links come filled in from the manage tab
+            ttk.Label(dialog, text="Note: if you leave a playlist link empty, one will be created for you.",
+                      style="Muted.TLabel", wraplength=480, justify="left").grid(
+                row=3, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 4))
         result = {}
 
         def on_ok():
@@ -1292,8 +1294,8 @@ class ScrapifyApp:
         win = tk.Toplevel(self.root)
         win.title(f"Exclude Songs: {pair['name']}")
         win.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
+        win.transient(self.root)  # before _decorate: see there
         self._decorate(win, win.title())
-        win.transient(self.root)
         win.geometry("760x560")
         win.grab_set()
         panels = ttk.Frame(win)
@@ -2260,6 +2262,18 @@ class ScrapifyApp:
         p = self._colors
         chrome.set_colors(bg=p["bg"], fg=p["fg"], muted=p["muted"], hover_bg=p["hover"])
         window._scrapify_chrome = chrome  # its window callback has to live as long as the window
+        # on windows, tk rebuilds a shown window's frame when it's made transient or (un)resizable,
+        # and the new frame has windows' own title bar again, over ours. set those before this; if
+        # anything sets them after, the caption is hidden again on the new frame
+        for name in ("transient", "wm_transient", "resizable", "wm_resizable"):
+            original = getattr(window, name)
+
+            def rehide(*args, _original=original, **kwargs):
+                result = _original(*args, **kwargs)
+                if args or kwargs:
+                    chrome.install()
+                return result
+            setattr(window, name, rehide)
 
     def _small_icon(self):
         # the 16px icon for dialog title bars, made once
