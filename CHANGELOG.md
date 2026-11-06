@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
 
+- A Manage tab: see both accounts' playlists side by side with their songs and covers. Copy, move, remove and reorder songs, create, rename, duplicate and delete playlists, merge playlists, and make sync pairs from them. A Shortcuts page lists the keys
+- The accent is now the logo's green to purple instead of the stock blue: buttons, links, badges, selected rows and ticks
+- The title row has Scrapify's name beside the logo, with the tabs centered between it and the window buttons
+- A loading bar shows wherever Scrapify waits: Exclude Songs, sync, the update check and download, the Chromium install and Get Sessions
+- Songs one platform lists with a shortened title no longer pass as a match when their Arabic titles conflict
+- Settings fall back to their defaults when a key is missing from the settings file
+- The window can't be resized shorter than its content
 - The Sync tab's log is now an Activity feed: a card per playlist pair with a one-line summary and every song's outcome (added, other version, possibly missing, needs your answer, removed, failed). Hover an icon to see what it means. Settings > Open Sync Log still has the full detail
 - Settings > Matching > Judgement: Automatic, or Semi-automatic, where songs Scrapify isn't sure about wait on the Sync tab for a yes or no. Answers are remembered for every later sync
 - Settings > Notifications: one switch for all of them, with "When a sync starts and finishes" and "Ask me when unsure" under it
