@@ -52,6 +52,15 @@ def _matches(text, query):
     return all(word in text for word in query.split())
 
 
+def count(n, word, plural=None):
+    """'1 song', '3 songs'"""
+    return f"{n} {word if n == 1 else (plural or word + 's')}"
+
+
+def title_of(p):
+    return p.get("name") or "Untitled"
+
+
 # ---------------------------------------------------------------- cover art
 
 class Thumbs:
@@ -255,7 +264,7 @@ class SongList(ttk.Frame):
         self._selection_changed()
 
     def select_indexes(self, indexes):
-        self.selected = set(indexes)
+        self.selected = {i for i in indexes if 0 <= i < len(self.rows)}
         self.redraw()
         self._selection_changed()
 
@@ -372,8 +381,10 @@ class SongList(ttk.Frame):
             if length:
                 c.create_text(right, mid, text=length, fill=p["muted"], font=self.artist_font, anchor="e")
                 right -= self.artist_font.measure("00:00") + 12
-            if self.show_playlist:
-                name = self._fit(row["playlist"]["name"], self.small_font, min(110, max(0, right - tx - 160)))
+            # which playlist a song is in, when several are shown and the title keeps 200px for itself
+            room_left = right - (tx + song_thumb_size + 10) - 200
+            if self.show_playlist and room_left > 50:
+                name = self._fit(row["playlist"]["name"] or "Untitled", self.small_font, min(120, room_left))
                 if name:
                     c.create_text(right, mid, text=name, fill=p["muted"], font=self.small_font, anchor="e")
                     right -= self.small_font.measure(name) + 12
@@ -514,9 +525,12 @@ class PlatformPane(ttk.Frame):
         ttk.Label(head, text=platform_names[platform], font=("Segoe UI Variable Display", 13, "bold")).pack(side="left")
         self.status_var = tk.StringVar(value="")
         ttk.Label(head, textvariable=self.status_var, style="Muted.TLabel").pack(side="left", padx=(10, 0))
-        self.refresh_btn = ttk.Button(head, text="↻", width=3, command=self.load_playlists)
+        self.refresh_btn = ttk.Button(head, text="↻", width=3, command=self.refresh)
         self.refresh_btn.pack(side="right")
-        tab.tip(self.refresh_btn, "Load the playlists again")
+        tab.tip(self.refresh_btn, "Refresh playlists and songs")
+        self.new_btn = ttk.Button(head, text="New playlist", command=self.new_playlist)
+        self.new_btn.pack(side="right", padx=(0, 6))
+        tab.tip(self.new_btn, f"Create a playlist on {platform_names[platform]}")
 
         self.playlist_search = tab.search_box(self, "Search playlists", self._fill_playlists)
         self.playlist_search.pack(fill="x", pady=(0, 4))
@@ -531,6 +545,9 @@ class PlatformPane(ttk.Frame):
         scroll.pack(side="right", fill="y")
         self.tree.bind("<Button-1>", self._tree_click)
         self.tree.bind("<Button-3>", self._tree_menu)
+        self.tree.bind("<F2>", lambda e: self._on_current(self.tab.rename_playlist))
+        self.tree.bind("<Delete>", lambda e: self._on_current(self.tab.delete_playlist))
+        self.current = None  # the playlist last clicked, for F2 and Delete
         self.tree.tag_configure("readonly", foreground="#8a8a8a")
         self.tree.tag_configure("drop", background="#3a7bd5", foreground="#ffffff")
 
@@ -546,7 +563,7 @@ class PlatformPane(ttk.Frame):
                               on_drop=self._drop, on_delete=self.remove_selected, on_key=self._key,
                               on_open=lambda row: self._open_song(row["track"]))
         self.songs.pack(fill="both", expand=True)
-        self.songs.empty_text = "Tick a playlist above to see its songs."
+        self.songs.empty_text = "Select a playlist above to see its songs."
 
         actions = ttk.Frame(self)
         actions.pack(fill="x", pady=(6, 0))
@@ -557,9 +574,9 @@ class PlatformPane(ttk.Frame):
         for b in (self.copy_btn, self.move_btn, self.remove_btn):
             b.pack(side="left", padx=(0, 6))
         self.more_btn.pack(side="right")
-        tab.tip(self.copy_btn, "Add the picked songs to another playlist, on either service")
-        tab.tip(self.move_btn, "Add the picked songs to another playlist, then take them out of this one")
-        tab.tip(self.remove_btn, "Take the picked songs out of their playlist (Delete key)")
+        tab.tip(self.copy_btn, "Copy the selected songs to another playlist")
+        tab.tip(self.move_btn, "Move the selected songs to another playlist")
+        tab.tip(self.remove_btn, "Remove the selected songs from their playlist (Delete)")
         self._selection_changed(0, 0, 0)
 
     # ------------------------------------------------------------ playlists
@@ -590,13 +607,20 @@ class PlatformPane(ttk.Frame):
         def failed(e):
             self.refresh_btn.config(state="normal")
             self.status_var.set("")
-            self.tab.show_error(f"Couldn't load the {platform_names[self.platform]} playlists", e)
+            self.tab.show_error(f"Couldn't load your {platform_names[self.platform]} playlists", e)
 
         self.tab.workers[self.platform].submit(lambda s: s.client().list_playlists(), done, failed)
 
+    def refresh(self):
+        """the playlists again, and the songs of the ones shown"""
+        for url in self.checked:
+            self.tab.songs.pop(url, None)
+        self.load_playlists()
+        self.show_songs(keep_selection=True)
+
     def _update_status(self):
         n = len(self.playlists)
-        self.status_var.set(f"{n} playlist{'s' if n != 1 else ''}")
+        self.status_var.set(count(n, "playlist"))
 
     def _fill_playlists(self, *_):
         query = self.playlist_search.query()
@@ -607,7 +631,7 @@ class PlatformPane(ttk.Frame):
                 continue
             self._insert_playlist(p)
         if not self.items and self.playlists:
-            self.tree.insert("", "end", text="   No playlists match.", tags=("readonly",))
+            self.tree.insert("", "end", text="  No matching playlists", tags=("readonly",))
 
     def tags_for(self, p):
         # a ticked playlist is a highlighted row, there's no box to tick
@@ -618,9 +642,9 @@ class PlatformPane(ttk.Frame):
         count = "" if p.get("count") is None else str(p["count"])
         image = self.image_for(p)
         kwargs = {"image": image} if image is not None else {}
-        name = p["name"] or "(no name)"
+        name = title_of(p)
         if not p.get("editable"):
-            name += "  (read only)"
+            name += "  (read-only)"
         item = self.tree.insert("", "end", text=f"  {name}", values=(count,), tags=self.tags_for(p), **kwargs)
         self.items[item] = p
 
@@ -640,6 +664,8 @@ class PlatformPane(ttk.Frame):
         p = self.items.get(item)
         if p is None:
             return "break"
+        self.tree.focus_set()
+        self.current = p
         if p["url"] in self.checked:
             self.checked.remove(p["url"])
         else:
@@ -684,9 +710,9 @@ class PlatformPane(ttk.Frame):
             for p in loading:
                 self.load_songs(p)
         elif not self.checked:
-            self.songs.empty_text = "Tick a playlist above to see its songs."
+            self.songs.empty_text = "Select a playlist above to see its songs."
         else:
-            self.songs.empty_text = "No songs in this playlist."
+            self.songs.empty_text = "This playlist is empty."
         self.songs.set_rows(rows, show_playlist=len(self.checked) > 1, keep_selection=keep_selection)
         self.tab.update_pair_button()
 
@@ -709,7 +735,7 @@ class PlatformPane(ttk.Frame):
                 if item:
                     self._refresh_item(item)
             self.show_songs()
-            self.tab.show_error(f"Couldn't load the songs of {p['name']}", e)
+            self.tab.show_error(f"Couldn't load {title_of(p)}", e)
 
         self.tab.workers[self.platform].submit(lambda s: s.client().get_playlist_tracks(p["url"]), done, failed)
 
@@ -718,9 +744,9 @@ class PlatformPane(ttk.Frame):
 
     def _selection_changed(self, picked, shown, total):
         if total and shown != total:
-            self.selection_var.set(f"{picked} picked · {shown}/{total}")
+            self.selection_var.set(f"{picked} selected · {shown} of {total}" if picked else f"{shown} of {total}")
         else:
-            self.selection_var.set(f"{picked} picked" if picked else (f"{total} songs" if total else ""))
+            self.selection_var.set(f"{picked} selected" if picked else (count(total, "song") if total else ""))
         state = "normal" if picked else "disabled"
         for b in (self.copy_btn, self.move_btn):
             b.config(state=state)
@@ -734,19 +760,19 @@ class PlatformPane(ttk.Frame):
 
     def _target_menu(self, button, move):
         menu = self.tab.targets_menu(self, lambda p: self.tab.send(self, p, move=move),
-                                     exclude={r["playlist"]["url"] for r in self.songs.selected_rows()})
+                                     exclude={r["playlist"]["url"] for r in self.songs.selected_rows()}, new=True)
         menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
 
     def _more_menu(self):
         menu = self._menu()
-        menu.add_command(label="Select all  (Ctrl+A)", command=self.songs.select_all)
-        menu.add_command(label="Select none  (Esc)", command=self.songs.select_none)
+        menu.add_command(label="Select all", accelerator="Ctrl+A", command=self.songs.select_all)
+        menu.add_command(label="Clear selection", accelerator="Esc", command=self.songs.select_none)
         menu.add_command(label="Invert selection", command=self.songs.invert)
         menu.add_separator()
         menu.add_command(label="Select duplicates", command=self.select_duplicates)
-        menu.add_command(label="Select songs missing from…", command=lambda: self._missing_menu(menu))
+        menu.add_command(label="Select songs not in…", command=lambda: self._missing_menu(menu))
         menu.add_separator()
-        menu.add_command(label="Copy names to clipboard", command=self.copy_names)
+        menu.add_command(label="Copy song names", command=self.copy_names)
         b = self.more_btn
         menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
 
@@ -762,21 +788,21 @@ class PlatformPane(ttk.Frame):
             return
         menu = self._menu()
         exclude = {r["playlist"]["url"] for r in rows}
-        menu.add_cascade(label=f"Copy {len(rows)} to", menu=self.tab.targets_menu(
-            menu, lambda p: self.tab.send(self, p, move=False), exclude=exclude))
-        menu.add_cascade(label=f"Move {len(rows)} to", menu=self.tab.targets_menu(
-            menu, lambda p: self.tab.send(self, p, move=True), exclude=exclude))
+        menu.add_cascade(label="Copy to", menu=self.tab.targets_menu(
+            menu, lambda p: self.tab.send(self, p, move=False), exclude=exclude, new=True))
+        menu.add_cascade(label="Move to", menu=self.tab.targets_menu(
+            menu, lambda p: self.tab.send(self, p, move=True), exclude=exclude, new=True))
         editable = all(r["playlist"].get("editable") for r in rows)
-        menu.add_command(label="Remove from playlist", command=self.remove_selected,
+        menu.add_command(label="Remove from playlist", accelerator="Delete", command=self.remove_selected,
                          state="normal" if editable else "disabled")
         menu.add_separator()
-        menu.add_command(label="Copy names to clipboard", command=self.copy_names)
+        menu.add_command(label="Copy song names", accelerator="Ctrl+C", command=self.copy_names)
         if len(rows) == 1:
             t = rows[0]["track"]
             link = (f"https://open.spotify.com/track/{t['uri'].rsplit(':', 1)[-1]}" if t.get("uri")
                     else f"https://play.anghami.com/song/{t['id']}" if t.get("id") else None)
             if link:
-                menu.add_command(label=f"Open on {platform_names[self.platform]}", command=lambda: webbrowser.open(link))
+                menu.add_command(label=f"Open in {platform_names[self.platform]}", command=lambda: webbrowser.open(link))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _tree_menu(self, event):
@@ -784,22 +810,37 @@ class PlatformPane(ttk.Frame):
         p = self.items.get(item)
         if p is None:
             return
+        self.current = p
         menu = self._menu()
-        menu.add_command(label="Show only this playlist", command=lambda: self.show_only(p["url"]))
+        menu.add_command(label="Show only this", command=lambda: self.show_only(p["url"]))
+        menu.add_command(label="Reload", command=lambda: self.reload(p))
+        menu.add_command(label=f"Open in {platform_names[self.platform]}", command=lambda: webbrowser.open(p["url"]))
+        menu.add_separator()
         menu.add_cascade(label="Merge into", menu=self.tab.targets_menu(
             menu, lambda dest: self.tab.merge(p, dest), exclude={p["url"]}))
-        menu.add_command(label="Merge…", command=lambda: self.tab.merge_dialog(source=p))
         other = self.tab.panes["spotify" if self.platform == "anghami" else "anghami"]
         pair_menu = tk.Menu(menu, tearoff=0)
         for q in other.playlists:
-            pair_menu.add_command(label=q["name"] or "(no name)", command=lambda q=q: self.tab.make_pair(p, q))
+            pair_menu.add_command(label=title_of(q), command=lambda q=q: self.tab.make_pair(p, q))
         if not other.playlists:
-            pair_menu.add_command(label="Not loaded yet", state="disabled")
-        menu.add_cascade(label=f"Make sync pair with {platform_names[other.platform]}", menu=pair_menu)
+            pair_menu.add_command(label="Loading…", state="disabled")
+        menu.add_cascade(label="Create sync pair with", menu=pair_menu)
         menu.add_separator()
-        menu.add_command(label="Reload its songs", command=lambda: self.reload(p))
-        menu.add_command(label=f"Open on {platform_names[self.platform]}", command=lambda: webbrowser.open(p["url"]))
+        editable = "normal" if p.get("editable") else "disabled"
+        menu.add_command(label="Rename…", accelerator="F2", state=editable, command=lambda: self.tab.rename_playlist(p))
+        menu.add_command(label="Duplicate", command=lambda: self.tab.duplicate_playlist(p))
+        menu.add_command(label="Delete…", accelerator="Delete", state=editable,
+                         command=lambda: self.tab.delete_playlist(p))
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_current(self, action):
+        p = self.current
+        if p is not None and p in self.playlists and p.get("editable"):
+            action(p)
+        return "break"
+
+    def new_playlist(self):
+        self.tab.new_playlist(self.platform)
 
     def reload(self, p):
         self.tab.songs.pop(p["url"], None)
@@ -822,10 +863,10 @@ class PlatformPane(ttk.Frame):
             dupes += [indexes[j] for j in manage.duplicates(tracks)]
         self.songs.select_indexes(dupes)
         if not dupes:
-            self.tab.set_status("No duplicates in the ticked playlists.")
+            self.tab.set_status("No duplicates found.")
         else:
-            self.tab.set_status(f"Picked {len(dupes)} extra cop{'ies' if len(dupes) != 1 else 'y'}; "
-                                f"Remove takes them out and keeps the first of each.")
+            self.tab.set_status(f"Selected {count(len(dupes), 'duplicate')}. Remove deletes them and keeps the "
+                                f"first copy of each.")
 
     def select_missing_from(self, other):
         def pick(other_tracks):
@@ -834,13 +875,13 @@ class PlatformPane(ttk.Frame):
                                           self.tab.threshold())
             ids = {id(t) for t in missing}
             self.songs.select_indexes([i for i, r in enumerate(rows) if id(r["track"]) in ids])
-            self.tab.set_status(f"Picked {len(ids)} song(s) that {other['name']} doesn't have.")
+            self.tab.set_status(f"Selected {count(len(ids), 'song')} not in {title_of(other)}.")
 
         tracks = self.tab.songs.get(other["url"])
         if tracks is not None:
             pick(tracks)
         else:
-            self.tab.set_status(f"Reading {other['name']}…")
+            self.tab.set_status(f"Loading {title_of(other)}…")
             self.tab.panes[other["platform"]].load_songs(other, then=pick)
 
     def copy_names(self):
@@ -848,7 +889,7 @@ class PlatformPane(ttk.Frame):
         text = "\n".join(f"{r['track']['title']} - {r['track']['artist']}" for r in rows)
         self.clipboard_clear()
         self.clipboard_append(text)
-        self.tab.set_status(f"Copied {len(rows)} name(s).")
+        self.tab.set_status(f"Copied {count(len(rows), 'song name')}.")
 
     def remove_selected(self):
         rows = self.songs.selected_rows()
@@ -869,8 +910,7 @@ class PlatformPane(ttk.Frame):
         return None
 
     def can_reorder(self):
-        return (self.platform == "spotify" and len(self.checked) == 1 and not self.songs.query
-                and bool(self.single_target()))
+        return len(self.checked) == 1 and not self.songs.query and bool(self.single_target())
 
     def _key(self, key):
         rows = self.songs.selected_rows()
@@ -880,9 +920,8 @@ class PlatformPane(ttk.Frame):
                 text = "\n".join(f"{r['track']['title']} - {r['track']['artist']}" for r in rows)
                 self.clipboard_clear()
                 self.clipboard_append(text)
-                verb = "cut" if key == "Control-x" else "copied"
-                self.tab.set_status(f"{len(rows)} song(s) {verb}. Click the other list (or a playlist's songs) "
-                                    f"and press Ctrl+V.")
+                verb = "Cut" if key == "Control-x" else "Copied"
+                self.tab.set_status(f"{verb} {count(len(rows), 'song')}. Click a song list and press Ctrl+V to paste.")
         elif key == "Control-v":
             self.tab.paste(self)
         elif key in ("Alt-Up", "Alt-Down") and rows:
@@ -970,21 +1009,21 @@ class ManageTab(ttk.Frame):
         self.merge_btn = ttk.Button(bar, text="Merge playlists…", command=self.merge_dialog,
                                     style=app.accent_style)
         self.merge_btn.pack(side="left")
-        self.pair_btn = ttk.Button(bar, text="Make sync pair", command=self.make_pair, state="disabled")
+        self.pair_btn = ttk.Button(bar, text="Create sync pair", command=self.make_pair, state="disabled")
         self.pair_btn.pack(side="left", padx=(6, 0))
-        self.tip(self.pair_btn, "Tick one playlist on each side, then this adds them as a pair to sync")
-        self.tip(self.merge_btn, "Add everything in one playlist to another. Nothing is ever removed.")
+        self.tip(self.pair_btn, "Select one playlist on each side to pair them for syncing")
+        self.tip(self.merge_btn, "Add the songs from one playlist to another. Nothing is removed.")
         self.progress = ttk.Progressbar(bar, mode="indeterminate", length=80)
         self.status_var = tk.StringVar(value="")
-        help_label = ttk.Label(bar, text="ⓘ Controls", style="Muted.TLabel", cursor="question_arrow")
+        help_label = ttk.Label(bar, text="ⓘ Shortcuts", style="Muted.TLabel", cursor="question_arrow")
         help_label.pack(side="right", padx=(8, 0))
-        self.tip(help_label, "Click a song to pick it, Ctrl+click for more, Shift+click for a range, or tick its box.\n"
-                             "Drag picked songs onto a playlist (either side) to copy them. Hold Shift to move them.\n"
-                             "Drop them on the other side's songs to add them to its ticked playlist.\n"
-                             "Ctrl+C or Ctrl+X, then Ctrl+V in the other list: copy or move.\n"
-                             "Drag inside a Spotify playlist, or Alt+Up / Alt+Down, to reorder it.\n"
-                             "Delete removes, Ctrl+A picks all, Esc picks none, double-click opens the song.\n"
-                             "Right-click a song or a playlist for everything else.", right=True)
+        self.tip(help_label, "Click to select a song. Ctrl+click adds to the selection, Shift+click selects a range.\n"
+                             "Drag songs onto a playlist to copy them. Hold Shift while dropping to move them.\n"
+                             "Ctrl+C or Ctrl+X, then Ctrl+V in a song list, to copy or move songs.\n"
+                             "Drag songs within a playlist, or press Alt+Up / Alt+Down, to reorder them.\n"
+                             "Delete removes the selected songs. Ctrl+A selects all. Esc clears the selection.\n"
+                             "Double-click a song to open it. F2 renames the selected playlist.\n"
+                             "Right-click a song or playlist for more options.", right=True)
         ttk.Label(bar, textvariable=self.status_var, style="Muted.TLabel").pack(side="left", padx=(12, 0))
 
         panes = ttk.PanedWindow(self, orient="horizontal")
@@ -1079,11 +1118,13 @@ class ManageTab(ttk.Frame):
         self.status_var.set(text)
 
     def show_error(self, what, error):
-        message = str(error)
+        message = str(error).strip() or type(error).__name__
+        if message.endswith("failed: Duplicate"):  # anghami's answer to a second playlist of the same name
+            message = "You already have a playlist with that name."
         if isinstance(error, AuthError):
-            message += "\n\nGet a fresh session on the Setup tab."
+            message += "\n\nUse Get Sessions on the Setup tab to log in again."
         self.set_status(f"{what}.")
-        self.app.messages.showerror("Scrapify", f"{what}:\n{message}")
+        self.app.messages.showerror("Scrapify", f"{what}.\n\nDetails: {message}")
 
     def _tick_busy(self):
         busy = any(w.busy for w in self.workers.values()) or any(not w._tasks.empty() for w in self.workers.values())
@@ -1139,7 +1180,7 @@ class ManageTab(ttk.Frame):
         anghami, spotify = (a, b) if a["platform"] == "anghami" else (b, a)
         pair = self.app._pair_from_playlists(anghami, spotify)
         if pair:
-            self.set_status(f"Added the sync pair {pair['name']}. It syncs from the Sync tab.")
+            self.set_status(f"Created sync pair {pair['name']}.")
 
     def all_playlists(self):
         return [p for platform in platform_order for p in self.panes[platform].playlists]
@@ -1157,20 +1198,123 @@ class ManageTab(ttk.Frame):
         if playlist["url"] in pane.checked:
             pane.show_songs(keep_selection=True)
 
-    def targets_menu(self, parent, command, exclude=(), include_readonly=False):
-        """a menu of every playlist to send to, one submenu per service"""
+    def targets_menu(self, parent, command, exclude=(), include_readonly=False, new=False):
+        """a menu of every playlist to send to, one submenu per service. new adds New playlist… on top,
+        which makes one and then sends there"""
         menu = tk.Menu(parent, tearoff=0)
         for platform in platform_order:
             sub = tk.Menu(menu, tearoff=0)
             pane = self.panes[platform]
+            if new:
+                sub.add_command(label="New playlist…", command=lambda pl=platform: self.new_playlist(pl, then=command))
+                sub.add_separator()
             choices = [p for p in pane.playlists if (include_readonly or p.get("editable")) and p["url"] not in exclude]
             for p in choices:
-                count = "" if p.get("count") is None else f"  ({p['count']})"
-                sub.add_command(label=f"{p['name'] or '(no name)'}{count}", command=lambda p=p: command(p))
+                songs = "" if p.get("count") is None else f"  ({p['count']})"
+                sub.add_command(label=f"{title_of(p)}{songs}", command=lambda p=p: command(p))
             if not choices:
-                sub.add_command(label="Not loaded yet" if not pane.loaded else "No playlists", state="disabled")
+                sub.add_command(label="Loading…" if not pane.loaded else "No playlists", state="disabled")
             menu.add_cascade(label=platform_names[platform], menu=sub)
         return menu
+
+    # ------------------------------------------------------------ playlists
+
+    def ask_text(self, title, prompt, initial=""):
+        """a small dialog with one text field; the text, or None when cancelled"""
+        dialog = self.app._dialog(title)
+        body = ttk.Frame(dialog, padding=(16, 12, 16, 0))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=prompt).pack(anchor="w", pady=(0, 6))
+        var = tk.StringVar(value=initial)
+        entry = ttk.Entry(body, textvariable=var, width=40)
+        entry.pack(fill="x")
+        result = {}
+
+        def ok():
+            text = var.get().strip()
+            if text:
+                result["text"] = text
+                dialog.destroy()
+
+        self.app._buttons(dialog, ("OK", ok, True), ("Cancel", dialog.destroy, False))
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        self.app._show_dialog(dialog)
+        dialog.after(50, lambda: (entry.focus_force(), entry.select_range(0, "end")) if entry.winfo_exists() else None)
+        dialog.wait_window()
+        return result.get("text")
+
+    def new_playlist(self, platform, then=None, tracks=(), name=None):
+        """asks for a name and creates the playlist; then(playlist) runs once it exists"""
+        name = name or self.ask_text("New playlist", f"Name of the new {platform_names[platform]} playlist:")
+        if not name:
+            return
+        pane = self.panes[platform]
+        self.set_status(f"Creating {name}…")
+
+        def done(p):
+            pane.playlists.insert(0, p)
+            pane._fill_playlists()
+            pane._update_status()
+            self.set_status(f"Created {title_of(p)}.")
+            if then:
+                then(p)
+            else:
+                pane.show_only(p["url"])
+
+        self.workers[platform].submit(lambda s: manage.create_playlist(s, name, tracks), done,
+                                      lambda e: self.show_error(f"Couldn't create {name}", e))
+
+    def rename_playlist(self, p):
+        name = self.ask_text("Rename playlist", "New name:", initial=p.get("name", ""))
+        if not name or name == p.get("name"):
+            return
+        self.set_status(f"Renaming {title_of(p)}…")
+
+        def done(_result):
+            old, p["name"] = title_of(p), name
+            pane = self.panes[p["platform"]]
+            pane._fill_playlists()
+            pane.show_songs(keep_selection=True)
+            self.set_status(f"Renamed {old} to {name}.")
+
+        self.workers[p["platform"]].submit(lambda s: s.client().rename_playlist(p["url"], name), done,
+                                           lambda e: self.show_error(f"Couldn't rename {title_of(p)}", e))
+
+    def duplicate_playlist(self, p):
+        name = self.ask_text("Duplicate playlist", "Name of the copy:", initial=f"{title_of(p)} (copy)")
+        if not name:
+            return
+
+        def create(tracks):
+            self.new_playlist(p["platform"], tracks=list(tracks), name=name)
+
+        tracks = self.songs.get(p["url"])
+        if tracks is not None:
+            create(tracks)
+        else:
+            self.set_status(f"Loading {title_of(p)}…")
+            self.panes[p["platform"]].load_songs(p, then=create)
+
+    def delete_playlist(self, p):
+        where = ("It will be removed from your Spotify library." if p["platform"] == "spotify"
+                 else "This can't be undone.")
+        if not self.app.messages.askyesno("Delete playlist", f"Delete {title_of(p)}?\n{where}"):
+            return
+        self.set_status(f"Deleting {title_of(p)}…")
+
+        def done(_result):
+            pane = self.panes[p["platform"]]
+            pane.playlists = [q for q in pane.playlists if q["url"] != p["url"]]
+            if p["url"] in pane.checked:
+                pane.checked.remove(p["url"])
+            self.songs.pop(p["url"], None)
+            pane._fill_playlists()
+            pane._update_status()
+            pane.show_songs()
+            self.set_status(f"Deleted {title_of(p)}.")
+
+        self.workers[p["platform"]].submit(lambda s: s.client().delete_playlist(p["url"]), done,
+                                           lambda e: self.show_error(f"Couldn't delete {title_of(p)}", e))
 
     # ------------------------------------------------------------ actions
 
@@ -1180,26 +1324,25 @@ class ManageTab(ttk.Frame):
         if not rows:
             return
         if move and not all(r["playlist"].get("editable") for r in rows):
-            self.app.messages.showinfo("Scrapify", "Some of those songs are in a read only playlist, so they can "
-                                                   "only be copied, not moved.")
+            self.app.messages.showinfo("Scrapify", "Songs in a read-only playlist can be copied but not moved.")
             return
         tracks = [r["track"] for r in rows]
         verb = "Moving" if move else "Copying"
         cross = any(manage.platform_of(t) != dest["platform"] for t in tracks)
-        self.set_status(f"{verb} {len(tracks)} song(s) to {dest['name']}"
-                        f"{' (searching ' + platform_names[dest['platform']] + ' for each)' if cross else ''}…")
+        self.set_status(f"{verb} {count(len(tracks), 'song')} to {title_of(dest)}"
+                        f"{' (matching on ' + platform_names[dest['platform']] + ')' if cross else ''}…")
 
         def done(result):
             self.set_songs(dest, result["tracks"])
             added, already, failed = result["added"], result["already"], result["failed"]
-            parts = [f"{added} added to {dest['name']}"]
+            parts = [f"{'Moved' if move else 'Added'} {count(added, 'song')} to {title_of(dest)}"]
             if already:
                 parts.append(f"{already} already there")
             if failed:
                 parts.append(f"{len(failed)} not found")
             self.set_status(", ".join(parts) + ".")
             if failed:
-                self._report_failed(f"Couldn't add these to {dest['name']}", failed)
+                self._report_failed(dest, failed)
             if move:
                 failed_ids = {id(t) for t in failed}
                 moved = [r for r in rows if id(r["track"]) not in failed_ids]
@@ -1207,7 +1350,7 @@ class ManageTab(ttk.Frame):
                     self.remove(source_pane, moved, quiet=True)
 
         def failed(e):
-            self.show_error(f"Couldn't add the songs to {dest['name']}", e)
+            self.show_error(f"Couldn't add songs to {title_of(dest)}", e)
 
         self.workers[dest["platform"]].submit(lambda s: manage.add_songs(s, dest["url"], tracks), done, failed)
 
@@ -1216,22 +1359,21 @@ class ManageTab(ttk.Frame):
         for r in rows:
             by_playlist.setdefault(r["playlist"]["url"], (r["playlist"], []))[1].append(r["track"])
         if not quiet:
-            names = ", ".join(p["name"] for p, _t in by_playlist.values())
-            if not self.app.messages.askyesno("Remove songs",
-                                              f"Take {len(rows)} song(s) out of {names}?"):
+            names = ", ".join(title_of(p) for p, _t in by_playlist.values())
+            if not self.app.messages.askyesno("Remove songs", f"Remove {count(len(rows), 'song')} from {names}?"):
                 return
         for p, tracks in by_playlist.values():
-            self.set_status(f"Removing {len(tracks)} song(s) from {p['name']}…")
+            self.set_status(f"Removing {count(len(tracks), 'song')} from {title_of(p)}…")
 
             def done(result, p=p):
                 self.set_songs(p, result["tracks"])
-                msg = f"{result['removed']} removed from {p['name']}."
+                msg = f"Removed {count(result['removed'], 'song')} from {title_of(p)}"
                 if result["failed"]:
-                    msg = msg[:-1] + f", {len(result['failed'])} couldn't be."
-                self.set_status(msg)
+                    msg += f", {len(result['failed'])} couldn't be removed"
+                self.set_status(msg + ".")
 
             def failed(e, p=p):
-                self.show_error(f"Couldn't remove songs from {p['name']}", e)
+                self.show_error(f"Couldn't remove songs from {title_of(p)}", e)
 
             pane_platform = p["platform"]
             self.workers[pane_platform].submit(lambda s, p=p, tracks=tracks: manage.remove_songs(s, p["url"], tracks),
@@ -1240,7 +1382,7 @@ class ManageTab(ttk.Frame):
 
     def merge(self, source, dest):
         """adds every song in source that dest doesn't have to dest, after saying how many"""
-        self.set_status(f"Comparing {source['name']} with {dest['name']}…")
+        self.set_status(f"Comparing {title_of(source)} and {title_of(dest)}…")
 
         def compare(source_tracks):
             def work(s):
@@ -1251,32 +1393,33 @@ class ManageTab(ttk.Frame):
                 dest_tracks, missing = result
                 self.set_songs(dest, dest_tracks)
                 if not missing:
-                    self.set_status(f"{dest['name']} already has everything in {source['name']}.")
-                    self.app.messages.showinfo("Merge", f"{dest['name']} already has every song in {source['name']}.")
+                    self.set_status(f"{title_of(dest)} already has every song in {title_of(source)}.")
+                    self.app.messages.showinfo("Merge", f"{title_of(dest)} already has every song in {title_of(source)}.")
                     return
                 cross = source["platform"] != dest["platform"]
-                note = (f"\n\nThey're on different services, so each song is searched for on "
-                        f"{platform_names[dest['platform']]}; ones it can't find are listed after.") if cross else ""
+                note = (f"\n\nSongs will be matched on {platform_names[dest['platform']]}. Any that can't be "
+                        f"found will be listed afterwards.") if cross else ""
+                already = len(source_tracks) - len(missing)
                 if not self.app.messages.askyesno(
-                        "Merge", f"Add {len(missing)} song(s) from {source['name']} to {dest['name']}?\n"
-                                 f"{len(source_tracks) - len(missing)} are already there. Nothing is removed "
-                                 f"from either playlist.{note}"):
+                        "Merge", f"Add {count(len(missing), 'song')} from {title_of(source)} to {title_of(dest)}?\n"
+                                 f"{count(already, 'song')} {'is' if already == 1 else 'are'} already there. "
+                                 f"Nothing will be removed.{note}"):
                     self.set_status("")
                     return
-                self.set_status(f"Adding {len(missing)} song(s) to {dest['name']}…")
+                self.set_status(f"Adding {count(len(missing), 'song')} to {title_of(dest)}…")
 
                 def added(result):
                     self.set_songs(dest, result["tracks"])
-                    self.set_status(f"Merged: {result['added']} added to {dest['name']}"
+                    self.set_status(f"Merged {count(result['added'], 'song')} into {title_of(dest)}"
                                     f"{', ' + str(len(result['failed'])) + ' not found' if result['failed'] else ''}.")
                     if result["failed"]:
-                        self._report_failed(f"Couldn't add these to {dest['name']}", result["failed"])
+                        self._report_failed(dest, result["failed"])
 
                 self.workers[dest["platform"]].submit(lambda s: manage.add_songs(s, dest["url"], missing), added,
-                                                      lambda e: self.show_error("The merge stopped", e))
+                                                      lambda e: self.show_error("Merge failed", e))
 
             self.workers[dest["platform"]].submit(work, compared,
-                                                  lambda e: self.show_error(f"Couldn't read {dest['name']}", e))
+                                                  lambda e: self.show_error(f"Couldn't load {title_of(dest)}", e))
 
         tracks = self.songs.get(source["url"])
         if tracks is not None:
@@ -1287,17 +1430,17 @@ class ManageTab(ttk.Frame):
     def merge_dialog(self, source=None):
         playlists = self.all_playlists()
         if not playlists:
-            self.app.messages.showinfo("Merge", "The playlists haven't loaded yet.")
+            self.app.messages.showinfo("Merge", "Playlists are still loading.")
             return
-        label = lambda p: f"{platform_names[p['platform']]} · {p['name'] or '(no name)'}"
+        label = lambda p: f"{platform_names[p['platform']]} · {title_of(p)}"
         labels = [label(p) for p in playlists]
         editable = [label(p) for p in playlists if p.get("editable")]
         by_label = {label(p): p for p in playlists}
         dialog = self.app._dialog("Merge playlists")
         body = ttk.Frame(dialog, padding=(16, 12, 16, 0))
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="Adds every song in the first playlist that the second doesn't have yet.\n"
-                             "Nothing is removed from either one. They can be on different services.",
+        ttk.Label(body, text="Adds the songs from the first playlist that the second doesn't have.\n"
+                             "Nothing is removed. The playlists can be on different services.",
                   style="Muted.TLabel", justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
         from_var = tk.StringVar(value=label(source) if source else "")
         into_var = tk.StringVar(value="")
@@ -1332,9 +1475,9 @@ class ManageTab(ttk.Frame):
                 if found:
                     hint.configure(text="" if var.get() in by_label else f"→ {label(found)}")
                 elif not q:
-                    hint.configure(text="Type part of a name, or open the list")
+                    hint.configure(text="Type to search, or open the list")
                 else:
-                    hint.configure(text=f"{len(hits)} matches, open the list to pick one" if hits else "No playlist matches")
+                    hint.configure(text=f"{len(hits)} matches. Open the list to choose one." if hits else "No matching playlists")
             var.trace_add("write", narrow)
             narrow()
             return box
@@ -1354,10 +1497,10 @@ class ManageTab(ttk.Frame):
         def go():
             src, dst = resolve(from_var, labels), resolve(into_var, editable)
             if not src or not dst:
-                self.app.messages.showinfo("Merge", "Pick a playlist in both boxes.", parent=dialog)
+                self.app.messages.showinfo("Merge", "Choose a playlist in both fields.", parent=dialog)
                 return
             if src["url"] == dst["url"]:
-                self.app.messages.showinfo("Merge", "Pick two different playlists.")
+                self.app.messages.showinfo("Merge", "Choose two different playlists.")
                 return
             dialog.destroy()
             self.merge(src, dst)
@@ -1365,10 +1508,10 @@ class ManageTab(ttk.Frame):
         self.app._buttons(dialog, ("Merge", go, True), ("Cancel", dialog.destroy, False))
         self.app._show_dialog(dialog)
 
-    def _report_failed(self, title, tracks):
-        dialog = self.app._dialog(title)
+    def _report_failed(self, dest, tracks):
+        dialog = self.app._dialog("Some songs weren't added")
         notes = "\n".join(f"- {t['title']} - {t['artist']}" for t in tracks)
-        ttk.Label(dialog, text=f"{len(tracks)} song(s) weren't found or didn't go in:",
+        ttk.Label(dialog, text=f"{count(len(tracks), 'song')} couldn't be found or added to {title_of(dest)}:",
                   padding=(16, 12, 16, 4)).pack(anchor="w")
         self.app._buttons(dialog, ("OK", dialog.destroy, True))
         self.app._notes_box(dialog, notes, height=min(14, len(tracks) + 2)).pack(fill="both", expand=True, padx=16)
@@ -1406,8 +1549,7 @@ class ManageTab(ttk.Frame):
         onto the other side's songs adds them to its ticked playlist. inside their own list, puts
         them somewhere else in the playlist (spotify)"""
         rows = source_pane.songs.selected_rows()
-        n = len(rows)
-        action, target, label = None, None, "Drop on a playlist to copy  ·  Shift to move"
+        action, target, label = None, None, "Drop on a playlist to copy · Hold Shift to move"
         self._clear_drop_target()
         for pane in self.panes.values():
             pane.songs.set_insert(None)
@@ -1419,9 +1561,9 @@ class ManageTab(ttk.Frame):
                     action, target = ("move" if shift else "copy"), p
                     pane.tree.item(item, tags=("drop",))
                     self._drop_target = (pane, item)
-                    label = f"{'Move' if shift else 'Copy'} {n} to {p['name']}"
+                    label = f"{'Move' if shift else 'Copy'} to {title_of(p)}"
                 else:
-                    label = f"{p['name']} is read only" if not p.get("editable") else "Already in this playlist"
+                    label = f"{title_of(p)} is read-only" if not p.get("editable") else "Already in this playlist"
                 break
             if widget is pane.songs.canvas:
                 if pane is source_pane:
@@ -1429,18 +1571,16 @@ class ManageTab(ttk.Frame):
                         pos = pane.songs.gap_at(y_root)
                         pane.songs.set_insert(pos)
                         action, target = "reorder", pos
-                        label = f"Move {n} here"
-                    elif pane.platform == "anghami" and len(pane.checked) == 1:
-                        label = "Anghami can't reorder songs from here"
+                        label = "Move here"
                     else:
-                        label = "To reorder, tick one playlist and clear the search"
+                        label = "To reorder, show one playlist and clear the search"
                 else:
                     p = pane.single_target()
                     if p is not None:
                         action, target = ("move" if shift else "copy"), p
-                        label = f"{'Move' if shift else 'Copy'} {n} to {p['name']}"
+                        label = f"{'Move' if shift else 'Copy'} to {title_of(p)}"
                     else:
-                        label = "Tick one playlist on this side to drop here"
+                        label = "Select one playlist on this side to drop here"
                 break
         if not final:
             self._drag_label(label, x_root, y_root)
@@ -1459,7 +1599,7 @@ class ManageTab(ttk.Frame):
     def paste(self, pane):
         clip = self.clip
         if not clip:
-            self.set_status("Nothing copied yet: pick songs and press Ctrl+C (or Ctrl+X to move them).")
+            self.set_status("Nothing to paste. Select songs and press Ctrl+C or Ctrl+X first.")
             return
         target = pane.single_target()
         if target is None:
@@ -1482,7 +1622,7 @@ class ManageTab(ttk.Frame):
     def nudge(self, pane, step):
         """alt+up / alt+down: the picked songs one place up or down"""
         if not pane.can_reorder():
-            self.set_status("Only a Spotify playlist, alone and without a search, can be reordered here.")
+            self.set_status("To reorder, show one playlist and clear the search.")
             return
         picked = sorted(pane.songs.view.index(i) for i in pane.songs.selected if i in pane.songs.view)
         if not picked:
@@ -1513,14 +1653,14 @@ class ManageTab(ttk.Frame):
         songs.anchor = next(iter(songs.selected), None)
         first = new_order.index(picked[0])
         songs._scroll_to(first)
-        self.set_status(f"Moving {len(picked)} song(s) in {p['name']}…")
+        self.set_status(f"Reordering {title_of(p)}…")
 
         def done(result):
             self.set_songs(p, result)
-            self.set_status(f"Moved {len(picked)} song(s) in {p['name']}.")
+            self.set_status(f"Reordered {title_of(p)}.")
 
         def failed(e):
-            self.show_error(f"Couldn't reorder {p['name']}", e)
+            self.show_error(f"Couldn't reorder {title_of(p)}", e)
             pane.reload(p)
 
         moved = [r["track"] for r in picked]

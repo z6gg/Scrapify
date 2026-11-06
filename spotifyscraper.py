@@ -25,6 +25,9 @@ selectors = {
     "create_playlist_item": "[role='menuitem']:has-text('Create a playlist')",
     "edit_details_name": "[data-testid='playlist-edit-details-name-input']",
     "edit_details_save": "[data-testid='playlist-edit-details-save-button']",
+    "more_button": "[data-testid='action-bar-row'] [data-testid='more-button']",
+    "delete_item": "[role='menuitem']:has-text('Delete')",
+    "delete_dialog": "[role='dialog']:not([hidden]):has(button:has-text('Delete'))",
 }
 # the search request's shape (no login in it), saved so later runs skip loading a search page
 _search_template_file = "spotify_search_template.json"
@@ -510,6 +513,39 @@ class SpotifyScraper(bsc.BrowserClient):
                 self.log.warning("Spotify: created %s but couldn't rename it to '%s': %s", playlist_url, name, e)
                 self._dump(page, "debug_spotify_rename_failed")
             return playlist_url
+        finally:
+            page.close()
+
+    def rename_playlist(self, playlist_url, name):
+        # the player's edit details dialog, like create_playlist
+        page = self._context.new_page()
+        try:
+            page.goto(playlist_url, wait_until="domcontentloaded")
+            page.wait_for_selector(selectors["playlist_header"], timeout=self._t(20000)).click()
+            page.wait_for_selector(selectors["edit_details_name"], timeout=self._t(5000)).fill(name)
+            page.click(selectors["edit_details_save"])
+            page.wait_for_selector(selectors["edit_details_name"], state="detached", timeout=self._t(10000))
+            self.log.info("Spotify: renamed %s to '%s'", playlist_url, name)
+        except Exception:
+            self._dump(page, "debug_spotify_rename_failed")
+            raise
+        finally:
+            page.close()
+
+    def delete_playlist(self, playlist_url):
+        # the playlist's ... menu, Delete, then Delete again in the dialog it asks with
+        page = self._context.new_page()
+        try:
+            page.goto(playlist_url, wait_until="domcontentloaded")
+            page.wait_for_selector(selectors["more_button"], timeout=self._t(20000)).click()
+            page.wait_for_selector(selectors["delete_item"], timeout=self._t(5000)).click()
+            dialog = page.wait_for_selector(selectors["delete_dialog"], timeout=self._t(5000))
+            dialog.query_selector("button:has-text('Delete')").click()
+            page.wait_for_selector(selectors["delete_dialog"], state="detached", timeout=self._t(10000))
+            self.log.info("Spotify: deleted %s", playlist_url)
+        except Exception:
+            self._dump(page, "debug_spotify_delete_failed")
+            raise
         finally:
             page.close()
 

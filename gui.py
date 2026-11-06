@@ -537,7 +537,7 @@ class SongChecklist(ttk.LabelFrame):
             item = self.tree.insert("", "end", values=(self._mark(track), label))
             self.rows[item] = track
         if query:
-            self.status_var.set(f"{shown} of {len(self.cached_tracks)} song(s) match.")
+            self.status_var.set(f"{shown} of {len(self.cached_tracks)} songs match.")
         elif getattr(self, "_count_text", None):
             self.status_var.set(self._count_text)
 
@@ -879,7 +879,7 @@ class ScrapifyApp:
         """a sync pair from a playlist on each side, picked on the manage tab"""
         for pair in self.config["playlist_pairs"]:
             if (pair.get("anghami_playlist_url") == anghami["url"] and pair.get("spotify_playlist_url") == spotify["url"]):
-                messagebox.showinfo(app_name, f"Those two are already the pair {pair['name']}.")
+                messagebox.showinfo(app_name, f"These playlists are already paired as {pair['name']}.")
                 return None
         name = anghami["name"] if anghami["name"] == spotify["name"] else f"{anghami['name']} / {spotify['name']}"
         taken = {p["name"] for p in self.config["playlist_pairs"]}
@@ -897,7 +897,7 @@ class ScrapifyApp:
     def _manage_session_problem(self, platform):
         label = platform_names[platform]
         if label in sync_main.missing_sessions(self.config):
-            return f"Not logged in to {label} (or the session expired).\nUse Get Sessions on the Setup tab first."
+            return f"You're not logged in to {label}, or your session has expired.\nUse Get Sessions on the Setup tab."
         return None
 
     def _save_config(self):

@@ -491,6 +491,39 @@ class AnghamiClient(bsc.BrowserClient):
         self.log.info("Anghami: added %d song(s) by id", len(tracks) - len(failed))
         return failed
 
+    def rename_playlist(self, playlist_url, name):
+        playlist_id = self._open_api(playlist_url)
+        self._gateway({"type": "UPDATEplaylist", "playlistid": playlist_id, "action": "update", "newname": name},
+                      post=True)
+        self.log.info("Anghami: renamed playlist %s to '%s'", playlist_id, name)
+
+    def delete_playlist(self, playlist_url):
+        playlist_id = self._open_api(playlist_url)
+        self._gateway({"type": "UPDATEplaylist", "playlistid": playlist_id, "action": "delete"}, post=True)
+        self.log.info("Anghami: deleted playlist %s", playlist_id)
+
+    def move_tracks(self, playlist_url, ids, before_id=None):
+        """moves the songs with ids to just before before_id (the end without one). the player's own
+        call sends the whole new order; anything it leaves out is put back after"""
+        playlist_id = self._open_api(playlist_url)
+        current = [t["id"] for t in self._read_playlist_api(playlist_id)]
+        moving = set(ids)
+        rest = [i for i in current if i not in moving]
+        at = rest.index(before_id) if before_id in rest else len(rest)
+        order = rest[:at] + [i for i in current if i in moving] + rest[at:]
+        if sorted(order) != sorted(current):
+            raise RuntimeError("the new order doesn't have the same songs")
+        self._gateway({"type": "PUTplaylist", "playlistid": playlist_id, "action": "update",
+                       "songid": ",".join(order)}, post=True)
+        after = self._read_playlist_api(playlist_id, partial=True)[0]
+        lost = [i for i in dict.fromkeys(current) if i not in {t["id"] for t in after}]
+        if lost:
+            self.log.warning("Anghami: reordering dropped %d song(s), adding them back", len(lost))
+            self._gateway({"type": "PUTplaylist", "playlistid": playlist_id, "action": "append",
+                           "songID": ",".join(lost)}, post=True)
+            after = self._read_playlist_api(playlist_id, partial=True)[0]
+        return after
+
     def create_playlist(self, name):
         # private, the same call the player's Create Playlist dialog makes
         self._open_api()

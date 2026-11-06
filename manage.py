@@ -135,7 +135,7 @@ class Worker:
                 fn, done, failed = item
                 if not self.begin():
                     if failed:
-                        self.post(failed, RuntimeError("Scrapify is syncing right now, try again when it's done."))
+                        self.post(failed, RuntimeError("A sync is running. Try again when it finishes."))
                     continue
                 self.busy = True
                 try:
@@ -204,10 +204,19 @@ def remove_songs(session, url, tracks):
 
 
 def move_within(session, url, tracks, before=None):
-    """puts tracks just before the song before (the end without one). spotify only: anghami's
-    player has no call for it"""
+    """puts tracks just before the song before (the end without one)"""
+    key = "uid" if session._worker.platform == "spotify" else "id"
+    return session.client().move_tracks(url, [t[key] for t in tracks if t.get(key)],
+                                        before.get(key) if before else None)
+
+
+def create_playlist(session, name, tracks=()):
+    """a new playlist, with tracks in it when given (copies of another one's songs). returns its
+    entry for the playlist list"""
     client = session.client()
-    if not hasattr(client, "move_tracks"):
-        raise RuntimeError("Anghami doesn't let other apps reorder a playlist's songs.")
-    uids = [t["uid"] for t in tracks if t.get("uid")]
-    return client.move_tracks(url, uids, before.get("uid") if before else None)
+    url = client.create_playlist(name)
+    if tracks:
+        add_songs(session, url, list(tracks))
+    found = next((p for p in client.list_playlists() if p["url"].rstrip("/") == url.rstrip("/")), None)
+    return found or {"platform": session._worker.platform, "id": url.rsplit("/", 1)[-1], "name": name,
+                     "url": url, "count": len(tracks), "image": "", "editable": True}
