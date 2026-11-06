@@ -354,7 +354,7 @@ class ActivityFeed(tk.Frame):
         # comes out right to left in place, and the words around it stay in order
         self._insert(track.get("title") or "?", title_tag, *extra)
         if track.get("artist"):
-            self._insert(" — ", "sep", *extra)
+            self._insert(" - ", "sep", *extra)
             self._insert(track["artist"], artist_tag, *extra)
 
     def _render_song(self, song, pair, dry_run):
