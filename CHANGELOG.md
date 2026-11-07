@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4.1
 
 - Semi-automatic matching now also shows the closest song for each "possibly missing" song, with a tick to add it or a cross for each. Leave them unanswered and nothing waits on it; a later sync shows them again for whatever is still missing
 
