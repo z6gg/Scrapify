@@ -186,6 +186,8 @@ def diff_and_apply(pair_name, source_tracks, dest_tracks, dest_client, threshold
     data = choices.load()
     known, rejected = choices.known(dest_label, data), choices.rejected(dest_label, data)
     rows, questions = [], 0
+    if not dry_run:
+        choices.clear_weak(pair_name, dest_label)  # last sync's closest-match offers, nobody took them
 
     if swaps:
         swap_src = [s for s, _d in swaps]
@@ -230,8 +232,10 @@ def diff_and_apply(pair_name, source_tracks, dest_tracks, dest_client, threshold
                 questions += 1
             rows.append(_row("unsure", t, closest, "Is this the same song? Answer at the top of the feed"))
         else:
-            rows.append(_row("missing", t, closest if info.get("score", 0) >= 40 else None,
-                             f"Possibly not on {dest_label}"))
+            near = closest if info.get("score", 0) >= 40 else None
+            if mode == "semi" and near and not dry_run:
+                choices.add_pending(pair_name, dest_label, t, near, info.get("score"), weak=True)
+            rows.append(_row("missing", t, near, f"Possibly not on {dest_label}"))
 
     if to_remove:
         if dry_run:

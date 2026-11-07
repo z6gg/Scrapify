@@ -6,6 +6,7 @@ newest first. songs a semi-automatic sync wasn't sure about wait in a card pinne
 with a yes and a no button. hovering a song's icon says what the icon means
 """
 
+import os
 import time
 import tkinter as tk
 from tkinter import font as tkfont
@@ -39,11 +40,11 @@ runs_kept = 30
 
 palette = {
     False: {"added": "#0f7b0f", "version": "#7a3fd6", "kept": "#7a3fd6", "missing": "#9d5d00", "unsure": "#7a3fd1",
-            "error": "#c42b1c", "removed": "#6b6b6b", "link": "#7a3fd6", "button": "#e9e9e9",
-            "button_hover": "#dcdcdc", "card_line": "#e5e5e5", "tip_bg": "#f9f9f9", "tip_border": "#d0d0d0"},
+            "error": "#c42b1c", "removed": "#6b6b6b", "link": "#7a3fd6", "button": "#f1f1f1",
+            "button_hover": "#e2e2e2", "button_line": "#b9b9b9", "primary": "#7a3fd6", "primary_hover": "#8d57e0", "card_line": "#e5e5e5", "tip_bg": "#f9f9f9", "tip_border": "#d0d0d0"},
     True: {"added": "#6ccb5f", "version": "#a77bf0", "kept": "#a77bf0", "missing": "#f2c661", "unsure": "#c6a7ff",
-           "error": "#ff99a4", "removed": "#9d9d9d", "link": "#a77bf0", "button": "#383838",
-           "button_hover": "#454545", "card_line": "#3a3a3a", "tip_bg": "#2b2b2b", "tip_border": "#4a4a4a"},
+           "error": "#ff99a4", "removed": "#9d9d9d", "link": "#a77bf0", "button": "#3a3a3a",
+           "button_hover": "#4a4a4a", "button_line": "#6a6a6a", "primary": "#7a3fd6", "primary_hover": "#8d57e0", "card_line": "#3a3a3a", "tip_bg": "#2b2b2b", "tip_border": "#4a4a4a"},
 }
 
 
@@ -171,8 +172,9 @@ class ActivityFeed(tk.Frame):
                         lmargin2=28, spacing1=3)
         t.tag_configure("pending_head", font=f["big"], foreground=fg, spacing1=2)
         t.tag_configure("pending_hint", font=f["small"], foreground=muted, spacing3=4)
+        t.tag_configure("pending_gap", spacing1=14)  # a second section under the first
         t.tag_configure("empty", foreground=muted, font=f["body"], spacing1=8)
-        t.tag_configure("buttons", lmargin1=28, spacing1=4, spacing3=4)
+        t.tag_configure("buttons", lmargin1=28, spacing1=8, spacing3=6)
         t.tag_configure("rule", font=("Segoe UI", 2), spacing1=10)
         for status in statuses:
             t.tag_configure(f"icon_{status}", foreground=c.get(status, fg), font=f["icon"])
@@ -415,37 +417,31 @@ class ActivityFeed(tk.Frame):
 
     def _render_pending(self):
         t = self.text
-        n = len(self.pending)
+        offers = [q for q in self.pending if q.get("weak")]
+        questions = [q for q in self.pending if not q.get("weak")]
+        n = len(questions)
         if n:
             self._insert(f"Needs your answer  ·  {n}", "pending_head", "run_first")
             self._insert("\n")
             self._insert("Scrapify wasn't sure these are the same song. Your answer is remembered and used on "
                          "every sync from now on.", "pending_hint")
-        else:
+        elif not offers:
             self._insert("All answered", "pending_head", "run_first")
             self._insert("\n")
             self._insert(f"{self.answered} answer{'s' if self.answered != 1 else ''} saved. They're used on the "
                          "next sync.", "pending_hint")
-        for item in self.pending:
-            source, candidate = item.get("source") or {}, item.get("candidate") or {}
-            self._insert("\n", "row")
-            self._insert(statuses["unsure"][0], "row", "icon_unsure")
-            self._insert("  ", "row")
-            self._names(source, "title", "artist", ("row",))
-            if source.get("duration"):
-                self._insert(f"  {_clock(source['duration'])}", "row", "muted")
-            self._insert("\n", "sub")
-            self._insert(f"{item.get('service', '')} has: ", "sub")
-            self._names(candidate, "mtitle", "martist", ("sub",))
-            if candidate.get("duration"):
-                self._insert(f"  {_clock(candidate['duration'])}", "sub")
-            if item.get("pair"):
-                self._insert(f"   ·   {item['pair']}", "sub")
-            self._insert("\n", "buttons")
-            for label, same in (("✓  Same song", True), ("✗  Not the same", False)):
-                button = self._button(label, lambda i=item["id"], s=same: self.on_answer and self.on_answer(i, s))
-                t.window_create("end", window=button, padx=0, pady=2)
-                self._insert("  ", "buttons")
+        for item in questions:
+            self._render_choice(item, statuses["unsure"][0], "icon_unsure", "{} has: ",
+                                "Same song: add it", "Not the same song")
+        if offers:
+            self._insert("\n" if n else "")
+            self._insert(f"Possibly missing  ·  {len(offers)}", "pending_head", *(("pending_gap",) if n else ("run_first",)))
+            self._insert("\n")
+            self._insert("No match was found for these. Add the closest song if it's right. Leave them and "
+                         "nothing waits on it.", "pending_hint")
+            for item in offers:
+                self._render_choice(item, statuses["missing"][0], "icon_missing", "closest on {}: ",
+                                    "Add the closest song", "Don't add it")
         if self.on_sync_now and self.answered:
             self._insert("\n")
             if n:
@@ -453,12 +449,137 @@ class ActivityFeed(tk.Frame):
             self._insert("Sync now", "link", "sync_now")
             t.tag_bind("sync_now", "<Button-1>", lambda e: self.on_sync_now())
 
-    def _button(self, label, command):
-        c = self.colors
-        button = tk.Label(self.text, text=label, font=self.fonts["small"], bg=c.get("button", "#e9e9e9"),
-                          fg=c.get("fg", "#000"), padx=10, pady=3, cursor="hand2", bd=0)
-        button.bind("<Enter>", lambda e: button.configure(bg=c.get("button_hover", "#ddd")))
-        button.bind("<Leave>", lambda e: button.configure(bg=c.get("button", "#e9e9e9")))
-        button.bind("<ButtonRelease-1>", lambda e: command())
+    def _render_choice(self, item, icon, icon_tag, has_text, yes_tip, no_tip):
+        """one song and the closest one found on the other platform, with a tick and a cross at the
+        end of its line: the tick adds that song, the cross says it isn't the same"""
+        t = self.text
+        source, candidate = item.get("source") or {}, item.get("candidate") or {}
+        self._insert("\n", "row")
+        self._insert(icon, "row", icon_tag)
+        self._insert("  ", "row")
+        self._names(source, "title", "artist", ("row",))
+        if source.get("duration"):
+            self._insert(f"  {_clock(source['duration'])}", "row", "muted")
+        self._insert("   ", "row")
+        for glyph, same, tip in (("✓", True, yes_tip), ("✗", False, no_tip)):
+            button = self._button(glyph, lambda i=item["id"], v=same: self.on_answer and self.on_answer(i, v),
+                                  primary=same, tip=tip)
+            t.window_create("end", window=button, padx=4, pady=1, align="center")
+            t.tag_add("row", "end-2c", "end-1c")
+            self._insert(" ", "row")
+        self._insert("\n", "sub")
+        self._insert(has_text.format(item.get("service", "")), "sub")
+        self._names(candidate, "mtitle", "martist", ("sub",))
+        if candidate.get("duration"):
+            self._insert(f"  {_clock(candidate['duration'])}", "sub")
+        if item.get("pair"):
+            self._insert(f"   ·   {item['pair']}", "sub")
+
+    # the look of the app's own buttons: rounded, the logo's green to purple for the main action,
+    # a plain outlined one (like "All pairs") for the rest
+    _button_colors = {False: {"fill": "#ffffff", "hover": "#f3f3f3", "pressed": "#e8e8e8", "line": "#bcbcbc"},
+                      True: {"fill": "#2b2b2b", "hover": "#363636", "pressed": "#222222", "line": "#4a4a4a"}}
+    _shade = {"rest": 0, "hover": 0.12, "pressed": -0.18}
+
+    @staticmethod
+    def _split_label(label):
+        # "✓  Same song" is a glyph, two spaces, the words
+        if len(label) > 3 and label[1:3] == "  " and label[0] in "✓✗":
+            return label[0], label[3:]
+        if label in ("✓", "✗"):
+            return label, ""
+        return "", label
+
+    def _fonts_for_buttons(self):
+        """(words font, glyph font, words' pixel size) from the feed's small font, for drawing a button's label"""
+        if not hasattr(self, "_button_fonts"):
+            from PIL import ImageFont
+            scale = float(self.tk.call("tk", "scaling")) / (96 / 72)
+            px = max(9, round(abs(self.fonts["small"].actual("size")) * float(self.tk.call("tk", "scaling"))))
+            fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+
+            def load(names, size):
+                for name in names:
+                    try:
+                        return ImageFont.truetype(os.path.join(fonts, name), size)
+                    except OSError:
+                        pass
+                return ImageFont.load_default()
+            self._button_fonts = (load(("segoeui.ttf",), px * 4), load(("seguisym.ttf", "segoeui.ttf"), round(px * 4 * 1.04)),
+                                  px, scale)
+        return self._button_fonts
+
+    def _button_size(self, label):
+        glyph, words = self._split_label(label)
+        text_font, glyph_font, px, scale = self._fonts_for_buttons()
+        width = text_font.getlength(words) / 4
+        if glyph and words:
+            width += glyph_font.getlength(glyph) / 4 + 6 * scale
+        elif glyph:  # just the icon: a small button
+            return round(px + 10 * scale), round(px + 6 * scale)
+        return round(width + 24 * scale), round(px + 15 * scale)
+
+    def _button_image(self, w, h, primary, state, label):
+        key = (w, h, primary, state, self.dark, label)
+        cache = self.__dict__.setdefault("_button_cache", {})
+        if key not in cache:
+            from PIL import Image, ImageDraw, ImageTk
+            big = 4
+            text_font, glyph_font, px, scale = self._fonts_for_buttons()
+            radius = max(3, round(4 * scale))
+            size = (w * big, h * big)
+            mask = Image.new("L", size, 0)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius * big, fill=255)
+            if primary:
+                image = accent.gradient_image(*size)
+                shade = self._shade[state]
+                if shade:
+                    image = image.point(lambda v: int(v + shade * ((255 - v) if shade > 0 else v)))
+                image.putalpha(mask)
+            else:
+                colors = self._button_colors[self.dark]
+                image = Image.new("RGBA", size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(image)
+                draw.rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius * big, fill=colors["line"])
+                draw.rounded_rectangle((big, big, size[0] - 1 - big, size[1] - 1 - big),
+                                       radius=max(0, radius * big - big),
+                                       fill=colors["fill" if state == "rest" else state])
+            # the label, drawn here so the glyph and the words share one middle line: the words by their
+            # capitals' height, the glyph by its own ink
+            fg = "#ffffff" if primary else self.colors.get("fg", "#000000")
+            draw = ImageDraw.Draw(image)
+            glyph, words = self._split_label(label)
+            gap = 6 * scale * big if words else 0
+            glyph_w = glyph_font.getlength(glyph) if glyph else 0
+            words_w = text_font.getlength(words)
+            x = (size[0] - (glyph_w + (gap if glyph else 0) + words_w)) / 2
+            mid = size[1] / 2
+            if glyph:
+                top, bottom = glyph_font.getbbox(glyph, anchor="ls")[1::2]
+                draw.text((x, mid - (top + bottom) / 2), glyph, font=glyph_font, fill=fg, anchor="ls")
+                x += glyph_w + gap
+            cap_top, cap_bottom = text_font.getbbox("H", anchor="ls")[1::2]
+            draw.text((x, mid - (cap_top + cap_bottom) / 2), words, font=text_font, fill=fg, anchor="ls")
+            cache[key] = ImageTk.PhotoImage(image.resize((w, h), Image.LANCZOS), master=self)
+        return cache[key]
+
+    def _button(self, label, command, primary=False, tip=None):
+        w, h = self._button_size(label)
+        images = {state: self._button_image(w, h, primary, state, label) for state in ("rest", "hover", "pressed")}
+        button = tk.Label(self.text, image=images["rest"], bg=self.colors.get("bg", "#fff"), bd=0,
+                          highlightthickness=0, cursor="hand2")
+        button._images = images  # a label doesn't keep its pictures alive
+        def enter(e):
+            button.configure(image=images["hover"])
+            if tip:
+                self.tooltip.show(tip, button.winfo_rootx() + button.winfo_width() // 2, button.winfo_rooty())
+
+        def leave(e):
+            button.configure(image=images["rest"])
+            self.tooltip.hide()
+        button.bind("<Enter>", enter)
+        button.bind("<Leave>", leave)
+        button.bind("<ButtonPress-1>", lambda e: button.configure(image=images["pressed"]))
+        button.bind("<ButtonRelease-1>", lambda e: (self.tooltip.hide(), command()))
         self._widgets.append(button)
         return button

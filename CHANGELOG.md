@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Semi-automatic matching now also shows the closest song for each "possibly missing" song, with a tick to add it or a cross for each. Leave them unanswered and nothing waits on it; a later sync shows them again for whatever is still missing
+
 ## 1.4.0
 
 - A Manage tab: see both accounts' playlists side by side with their songs and covers. Copy, move, remove and reorder songs, create, rename, duplicate and delete playlists, merge playlists, and make sync pairs from them. A Shortcuts page lists the keys

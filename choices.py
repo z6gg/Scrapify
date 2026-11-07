@@ -68,8 +68,10 @@ def rejected(service, data=None):
     return out
 
 
-def add_pending(pair, service, source, candidate, score=None, path=None):
-    """asks about source -> candidate unless it's already asked or answered. True if it's new"""
+def add_pending(pair, service, source, candidate, score=None, path=None, weak=False):
+    """asks about source -> candidate unless it's already asked or answered. True if it's new.
+    weak: scrapify found no match and this is only the closest song. These are offered together
+    ("add the closest matches") and never need an answer, see clear_weak"""
     data = load(path)
     key, cid = choice_key(source), _candidate_id(candidate)
     for item in data["pending"] + data["answers"]:
@@ -77,9 +79,21 @@ def add_pending(pair, service, source, candidate, score=None, path=None):
             return False
     data["pending"].append({"id": uuid.uuid4().hex[:12], "pair": pair, "service": service, "key": key,
                             "source": _slim(source), "candidate": _slim(candidate),
-                            "score": round(score) if score is not None else None, "asked": time.time()})
+                            "score": round(score) if score is not None else None, "asked": time.time(),
+                            **({"weak": True} if weak else {})})
     save(data, path)
     return True
+
+
+def clear_weak(pair, service, path=None):
+    """forgets the closest-match offers for a pair, so a sync offers only what it still can't find.
+    Offers nobody took simply lapse: nothing waits on them and nothing is remembered about them"""
+    data = load(path)
+    kept = [p for p in data["pending"] if not (p.get("weak") and p["pair"] == pair and p["service"] == service)]
+    if len(kept) != len(data["pending"]):
+        data["pending"] = kept
+        save(data, path)
+
 
 
 def answer(pending_id, same, path=None):

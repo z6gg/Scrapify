@@ -1573,7 +1573,8 @@ class ScrapifyApp:
         """reads the semi-automatic questions (the background sync writes them too) into the feed"""
         self._questions_mtime = self._mtime(choices.choices_file)
         pending = choices.pending()
-        ids = {q["id"] for q in pending}
+        # the closest-match offers aren't questions: no notification, nothing waits on them
+        ids = {q["id"] for q in pending if not q.get("weak")}
         new = ids - (self._question_ids or set())
         if notify and new and self._question_ids is not None:
             self._notify(f"{len(new)} song{'s' if len(new) != 1 else ''} need{'' if len(new) != 1 else 's'} your "
@@ -2114,7 +2115,10 @@ class ScrapifyApp:
         for value, label, note in (
                 ("automatic", "Automatic", "Scrapify decides every song by itself."),
                 ("semi", "Semi-automatic", "When Scrapify isn't sure two songs are the same, it asks you on the "
-                                           "Sync tab instead of guessing. Your answers are remembered."),
+                                           "Sync tab, with a tick to add it or a cross for each song, instead of "
+                                           "guessing. That includes songs it couldn't find: it shows the closest one "
+                                           "it saw. Leave them unanswered and syncing carries on. Your answers are "
+                                           "remembered."),
         ):
             ttk.Radiobutton(box, text=label, value=value, variable=self.match_mode_var,
                             command=self._toggle_setting(self.match_mode_var, "match_mode")).pack(
