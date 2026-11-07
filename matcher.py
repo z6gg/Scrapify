@@ -580,6 +580,9 @@ def find_in_catalog(search, title, artist, threshold=87, exact_version=False, lo
             return hit
     if artist_songs and artist.strip():  # a song with no artist has no artist page to read
         seen += artist_songs(artist)
+        # the other script's name too: spotify may only know "Abadi Al Johar", not "عبادي الجوهر"
+        for other in alias_artists[:1]:
+            seen += artist_songs(other)
         hit, score, same_version = pick_best(target, seen, threshold, exact_version)
         best_score = max(best_score, score)
     if hit and same_version:

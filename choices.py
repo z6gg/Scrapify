@@ -55,7 +55,8 @@ def _candidate_id(track):
 def known(service, data=None):
     """{source song's choice_key: the song the user said it is} on service"""
     data = data or load()
-    return {a["key"]: a["candidate"] for a in data["answers"] if a["service"] == service and a["same"]}
+    return {a["key"]: {**a["candidate"], **({"linked": True} if a.get("linked") else {})}
+            for a in data["answers"] if a["service"] == service and a["same"]}
 
 
 def rejected(service, data=None):
@@ -106,6 +107,19 @@ def answer(pending_id, same, path=None):
                        and not (same and p["service"] == item["service"] and p["key"] == item["key"])]
     data["answers"].append({**{k: item[k] for k in ("pair", "service", "key", "source", "candidate")},
                             "same": bool(same), "answered": time.time()})
+    save(data, path)
+    return item
+
+
+def add_link(pair, service, key, source, candidate, path=None):
+    """the user gave the song's link on service: that song is used for source (filed under key) from
+    now on, by every sync in either mode. replaces any earlier link or yes for it and closes its questions"""
+    data = load(path)
+    data["pending"] = [p for p in data["pending"] if not (p["service"] == service and p["key"] == key)]
+    data["answers"] = [a for a in data["answers"] if not (a["service"] == service and a["key"] == key and a["same"])]
+    item = {"pair": pair, "service": service, "key": key, "source": _slim(source), "candidate": _slim(candidate),
+            "same": True, "linked": True, "answered": time.time()}
+    data["answers"].append(item)
     save(data, path)
     return item
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- A song Scrapify can't find gets a "Give its link" option in the Activity feed, in both Automatic and Semi-automatic. Paste the song's Spotify or Anghami link and that song is used on every sync from then on
+- Finding songs on Spotify now reads much more of the artist's catalogue (about 150 songs instead of 10), and searches the artist under their name in both scripts, so more songs by the right artist are found
+- A song you matched by hand (a link or a yes) is recognized in the playlist on the next sync even when its name is spelled differently, instead of being removed and added again
+- Song names fully in Arabic now read right to left in the Activity feed, title first
+
 ## 1.4.1
 
 - Semi-automatic matching now also shows the closest song for each "possibly missing" song, with a tick to add it or a cross for each. Leave them unanswered and nothing waits on it; a later sync shows them again for whatever is still missing

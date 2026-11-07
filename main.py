@@ -24,7 +24,7 @@ from playwright.sync_api import sync_playwright
 import browsersessioncommon as bsc
 import choices
 from anghamiclient import AnghamiClient
-from matcher import match_pairs, pair_tracks, track_key
+from matcher import choice_key, match_pairs, pair_tracks, track_key
 from browsersessioncommon import AuthError, PlaylistNotFoundError
 from spotifyscraper import SpotifyScraper
 from version import version
@@ -170,21 +170,45 @@ def _brief(track):
 
 
 def _row(status, track, match=None, note=None, **extra):
+    # key: what an answer about the song is filed under, for giving its link from the feed
     return {"status": status, "title": track.get("title", ""), "artist": track.get("artist", ""),
-            "duration": track.get("duration"), "match": _brief(match), "note": note, **extra}
+            "duration": track.get("duration"), "match": _brief(match), "note": note, "key": choice_key(track),
+            **extra}
+
+
+def _pair_remembered(source, dest, known):
+    """(source, dest) less the songs already paired by the user's answers or links: a source song
+    whose remembered song is in dest is that song, however different their names are. without this
+    every sync would remove the remembered song and add it again"""
+    dest_at = {}
+    for i, d in enumerate(dest):
+        did = d.get("uri") or d.get("id")
+        if did:
+            dest_at.setdefault(str(did), []).append(i)
+    used_src, used_dest = set(), set()
+    for si, s in enumerate(source):
+        chosen = known.get(choice_key(s))
+        cid = chosen and (chosen.get("uri") or chosen.get("id"))
+        free = dest_at.get(str(cid)) if cid else None
+        if free:
+            used_dest.add(free.pop(0))
+            used_src.add(si)
+    return ([s for i, s in enumerate(source) if i not in used_src],
+            [d for i, d in enumerate(dest) if i not in used_dest])
 
 
 def diff_and_apply(pair_name, source_tracks, dest_tracks, dest_client, threshold, dest_url, dest_label, dry_run=False,
                    mode="automatic", source_label=""):
     """returns the songs' outcomes, for the activity feed"""
-    to_add, to_remove = pair_tracks(source_tracks, dest_tracks, threshold)
+    data = choices.load()
+    known, rejected = choices.known(dest_label, data), choices.rejected(dest_label, data)
+    source_left, dest_left = _pair_remembered(source_tracks, dest_tracks, known)
+    to_add, to_remove = pair_tracks(source_left, dest_left, threshold)
     # another version of the same song (live vs studio) is only swapped when the exact one exists,
     # or every sync would remove the close one and fail to add the exact one
     swaps, to_add, to_remove = match_pairs(to_add, to_remove, threshold, versions=False)
     log.info("[%s] +%s: %d, -%s: %d, version swaps to try: %d",
              pair_name, dest_label, len(to_add), dest_label, len(to_remove), len(swaps))
-    data = choices.load()
-    known, rejected = choices.known(dest_label, data), choices.rejected(dest_label, data)
     rows, questions = [], 0
     if not dry_run:
         choices.clear_weak(pair_name, dest_label)  # last sync's closest-match offers, nobody took them
@@ -224,7 +248,8 @@ def diff_and_apply(pair_name, source_tracks, dest_tracks, dest_client, threshold
             rows.append(_row("error", t, hit, info["error"]))
         elif hit and id(t) not in failed_ids:
             if info.get("same_version", True):
-                rows.append(_row("added", t, hit, "Your earlier answer" if info.get("remembered") else None))
+                rows.append(_row("added", t, hit, ("Your link" if hit.get("linked") else "Your earlier answer")
+                                 if info.get("remembered") else None))
             else:
                 rows.append(_row("version", t, hit, f"Only a different version is on {dest_label}"))
         elif mode == "semi" and info.get("unsure") and closest:

@@ -195,8 +195,8 @@ class SongList(ttk.Frame):
                        "border": "#e5e5e5", "hover": "#f0f0f0", "selected_row": "#ece4f8"}
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, takefocus=1)
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.yview)
+        self.scrollbar.pack(side="right", fill="y")  # first, or the canvas takes all the room and leaves it 2px
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.scrollbar.pack(side="right", fill="y")
         self.title_font = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         self.artist_font = tkfont.Font(family="Segoe UI", size=9)
         self.small_font = tkfont.Font(family="Segoe UI", size=8)

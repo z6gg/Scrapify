@@ -7,12 +7,13 @@ with a yes and a no button. hovering a song's icon says what the icon means
 """
 
 import os
+import re
 import time
 import tkinter as tk
 from tkinter import font as tkfont
 
 import accent
-from matcher import normalize
+from matcher import has_arabic, normalize
 
 # tags that were the stock blue, now the logo's green to purple
 gradient_tags = {"link", "icon_version", "icon_kept", "chip_version", "chip_kept"}
@@ -60,6 +61,11 @@ def _when(stamp):
     return time.strftime("%b %d, %H:%M", t).replace(" 0", " ")
 
 
+def _reads_rtl(text):
+    # arabic with no latin letters in it: a name that reads right to left as a whole
+    return has_arabic(text) and not re.search("[A-Za-z]", text)
+
+
 def _gap(source, match):
     a, b = (source or {}).get("duration"), (match or {}).get("duration")
     if not a or not b or abs(a - b) <= 3:
@@ -105,9 +111,11 @@ class Tooltip:
 
 
 class ActivityFeed(tk.Frame):
-    def __init__(self, parent, on_answer=None, on_sync_now=None, load_pending=None):
+    def __init__(self, parent, on_answer=None, on_sync_now=None, load_pending=None, on_link=None):
         super().__init__(parent, bd=0, highlightthickness=0)
         self.on_answer, self.on_sync_now, self.load_pending = on_answer, on_sync_now, load_pending
+        # on_link(service, pair, key, song) asks for the song's link on service, True once it's saved
+        self.on_link = on_link
         self.items = []  # newest first: {"type": "run", ...} or {"type": "note", ...}
         self.pending = []
         self.answered = 0  # answers given since the last sync, so the card can offer to sync now
@@ -368,11 +376,15 @@ class ActivityFeed(tk.Frame):
 
     def _names(self, track, title_tag, artist_tag, extra=()):
         # title and artist in tags of their own so tk draws them as separate runs: an arabic name then
-        # comes out right to left in place, and the words around it stay in order
-        self._insert(track.get("title") or "?", title_tag, *extra)
-        if track.get("artist"):
-            self._insert(" - ", "sep", *extra)
-            self._insert(track["artist"], artist_tag, *extra)
+        # comes out right to left in place, and the words around it stay in order. when both are arabic
+        # the pair is read right to left too, so the title goes on the right: "artist - title" on screen
+        # reads "title - artist" like an english line does
+        title, artist = track.get("title") or "?", track.get("artist")
+        parts = [(title, title_tag), (" - ", "sep"), (artist, artist_tag)] if artist else [(title, title_tag)]
+        if artist and _reads_rtl(title) and _reads_rtl(artist):
+            parts.reverse()
+        for text, tag in parts:
+            self._insert(text, tag, *extra)
 
     def _render_song(self, song, pair, dry_run):
         status, match = song["status"], song.get("match")
@@ -397,6 +409,7 @@ class ActivityFeed(tk.Frame):
             sub = [(f"Possibly not on {dest}", None)]
             if match:
                 sub += [("  ·  closest: ", None), match, (_gap(song, match), None)]
+            sub += [("  ·  ", None), ("link", song, pair.get("name"), pair.get("dest"))]
         elif status == "unsure":
             sub = [("Is it ", None)] + ([match] if match else []) + [(_gap(song, match), None),
                                                                     ("?  Answer at the top.", None)]
@@ -410,6 +423,8 @@ class ActivityFeed(tk.Frame):
         for part in sub:
             if isinstance(part, dict):
                 self._names(part, "mtitle", "martist", ("sub",))
+            elif part[0] == "link":
+                self._link_action(*part[1:])
             else:
                 text, kind = part
                 if text:
@@ -474,6 +489,36 @@ class ActivityFeed(tk.Frame):
             self._insert(f"  {_clock(candidate['duration'])}", "sub")
         if item.get("pair"):
             self._insert(f"   ·   {item['pair']}", "sub")
+        if item.get("weak"):
+            self._insert("   ·   ", "sub")
+            self._link_action(item, item.get("pair"), item.get("service"))
+
+    def _link_action(self, song, pair, service):
+        """"Give its link" on a song scrapify can't find: the user pastes the song's link on the other
+        platform and that song is used from then on. once given, says so instead"""
+        if song.get("linked"):
+            self._insert("Link saved, used from the next sync", "sub", "chip_added")
+            return
+        key = song.get("key")
+        if not (self.on_link and key and service):
+            return
+        source = song.get("source") or song  # a question carries the song under source, a feed row is it
+        tag = f"songlink_{id(song)}"
+        self._insert(f"Give its {service} link", "sub", "link", tag)
+        self.text.tag_bind(tag, "<Button-1>", lambda e: self._give_link(song, pair, service, key, source))
+
+    def _give_link(self, song, pair, service, key, source):
+        self.tooltip.hide()
+        if not self.on_link(service, pair, key, source):
+            return
+        song["linked"] = True
+        # the same song in the other cards (earlier syncs) is linked as well
+        for item in self.items:
+            for p in item.get("pairs") or []:
+                for s in p.get("songs") or []:
+                    if s.get("key") == key and p.get("dest") == service:
+                        s["linked"] = True
+        self.render()
 
     # the look of the app's own buttons: rounded, the logo's green to purple for the main action,
     # a plain outlined one (like "All pairs") for the rest

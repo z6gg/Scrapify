@@ -31,6 +31,9 @@ selectors = {
 }
 # the search request's shape (no login in it), saved so later runs skip loading a search page
 _search_template_file = "spotify_search_template.json"
+# an artist's songs are read by paging a search for their name: one page shows ten or so of them,
+# this many pages of 50 show 150 or more
+_artist_pages, _artist_page_size = 6, 50
 # the cookie banner eats clicks at the bottom of the page. hidden, never answered
 _hide_cookie_banner_js = (
     "document.addEventListener('DOMContentLoaded', () => {"
@@ -71,6 +74,7 @@ class SpotifyScraper(bsc.BrowserClient):
         self._playlist_names = {}
         self._light_page = None
         self._library_template = None  # its libraryV3 request, for listing playlists
+        self._artist_songs_cache = {}
 
     def __enter__(self):
         super().__enter__()
@@ -476,6 +480,42 @@ class SpotifyScraper(bsc.BrowserClient):
         out.update({q: self._search_hits(r) for q, r in zip(queries, results)})
         return out
 
+    def artist_songs_many(self, artists):
+        """{artist credit: songs of every credited artist}"""
+        split = {a: [p for p in re.split(r"\s*(?:,|&|\bfeat\.?|\bft\.?)\s*", a) if p.strip()] for a in artists}
+        missing = list(dict.fromkeys(n for names in split.values() for n in names if n not in self._artist_songs_cache))
+        if missing:
+            self._artist_songs_cache.update(self._read_artists(missing))
+        return {a: [t for n in names for t in self._artist_songs_cache.get(n, [])] for a, names in split.items()}
+
+    def _read_artists(self, names):
+        # the first page is kept whole, like a plain search for the name. the later pages drift to
+        # other artists, so from them only the songs of the artist the first page is mostly about
+        out = {n: [] for n in names}
+        self._ensure_search_template(names[0])
+        bodies = []
+        for name in names:
+            for page in range(_artist_pages):
+                body = self._search_body(name)
+                body["variables"].update(offset=page * _artist_page_size, limit=_artist_page_size,
+                                         numberOfTopResults=_artist_page_size)
+                bodies.append(body)
+        results = self._api_post_many(bodies)
+        for i, name in enumerate(names):
+            pages = [self._search_hits(r) for r in results[i * _artist_pages:(i + 1) * _artist_pages]]
+            first = pages[0]
+            credits = {}
+            for hit in first:
+                for credited in hit["artist"].split(", "):
+                    credits[credited] = credits.get(credited, 0) + 1
+            top = max(credits, key=credits.get) if credits else None
+            songs = list(first)
+            if top and credits[top] >= 3:
+                songs += [h for page in pages[1:] for h in page if top in h["artist"].split(", ")]
+            seen = set()
+            out[name] = [h for h in songs if not (h["uri"] in seen or seen.add(h["uri"]))]
+        return out
+
     @staticmethod
     def _search_hits(result):
         items = ((((result or {}).get("data") or {}).get("searchV2") or {}).get("topResultsV2") or {}).get("itemsV2") or []
@@ -554,8 +594,8 @@ class SpotifyScraper(bsc.BrowserClient):
         """the song on spotify for each of tracks (None where there's none), read only"""
         if not self._api_url:
             self.get_playlist_tracks(playlist_url)
-        # searching the artist's name last brings up their best known songs
-        return find_many(tracks, self.search_many, threshold, exact_version, self.log, "Spotify", self.search_many,
+        # the artist's songs last, for what searching by name misses
+        return find_many(tracks, self.search_many, threshold, exact_version, self.log, "Spotify", self.artist_songs_many,
                          details=details, known=known, rejected=rejected)
 
     def add_tracks(self, playlist_url, tracks, threshold=87, exact_version=False, details=None, known=None,

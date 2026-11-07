@@ -40,6 +40,7 @@ from main import load_config, save_config
 import activityfeed
 import managetab
 import choices
+import songlinks
 import titlebar
 import updater
 import windhawk
@@ -1557,7 +1558,7 @@ class ScrapifyApp:
         ttk.Button(head, text="Open Sync Log", command=self._open_sync_log).pack(side="right")
         ttk.Button(head, text="Clear", command=lambda: self.feed.clear()).pack(side="right", padx=(0, gap_controls))
         self.feed = activityfeed.ActivityFeed(self.sync_tab, on_answer=self._answer_question,
-                                              on_sync_now=self._sync_answered)
+                                              on_sync_now=self._sync_answered, on_link=self._link_song)
         self.feed.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         scrollbar = ttk.Scrollbar(self.feed.text)
         self.feed.attach_scrollbar(scrollbar)
@@ -1595,6 +1596,98 @@ class ScrapifyApp:
                                            item["candidate"].get("title"), item["candidate"].get("artist"),
                                            item["service"], extra={"feed": False})
         self._refresh_questions(notify=False)
+
+    def _link_song(self, service, pair, key, source):
+        """asks for the link of a song scrapify can't find on service, reads which song it is and keeps
+        it: every sync from now on adds that song for source, in either mode. True once it's saved"""
+        dialog_root = tk.Toplevel(self.root)
+        dialog_root.title(f"{service} link")
+        dialog_root.configure(bg=ttk.Style().lookup("TFrame", "background") or "SystemButtonFace")
+        dialog_root.transient(self.root)  # before _decorate: see _pair_dialog
+        self._decorate(dialog_root, dialog_root.title())
+        dialog_root.grab_set()
+        dialog = ttk.Frame(dialog_root)
+        dialog.pack(fill="both", expand=True, padx=8, pady=(4, 0))
+        name = source.get("title") or "?"
+        if source.get("artist"):
+            name += f" - {source['artist']}"
+        ttk.Label(dialog, text=f"The link to this song on {service}:", wraplength=480, justify="left").grid(
+            row=0, column=0, sticky="w", padx=8, pady=(6, 0))
+        ttk.Label(dialog, text=name, font="SunValleyBodyStrongFont" if sv_ttk else None, wraplength=480,
+                  justify="left").grid(row=1, column=0, sticky="w", padx=8, pady=(2, 6))
+        link = tk.StringVar()
+        try:
+            clip = self.root.clipboard_get().strip()
+            if songlinks.looks_like(clip, service):
+                link.set(clip)
+        except tk.TclError:
+            pass  # nothing text on the clipboard
+        entry = ttk.Entry(dialog, textvariable=link, width=56)
+        entry.grid(row=2, column=0, sticky="we", padx=8, pady=6)
+        status = ttk.Label(dialog, text=f"On {service}, Share, then Copy link, and paste it here. It's used on "
+                                        "every sync from now on.", style="Muted.TLabel", wraplength=480,
+                           justify="left")
+        status.grid(row=3, column=0, sticky="w", padx=8, pady=(0, 4))
+        result, busy = {}, {}
+
+        def finish(song, error):
+            busy.clear()
+            if not dialog_root.winfo_exists():
+                return
+            ok_button.state(["!disabled"])
+            if error:
+                status.configure(text="")
+                messagebox.showerror(app_name, error, parent=dialog_root)
+                return
+            try:
+                choices.add_link(pair, service, key, source, song)
+            except OSError as e:
+                messagebox.showerror(app_name, f"Couldn't save the link:\n{e}", parent=dialog_root)
+                return
+            result["song"] = song
+            dialog_root.destroy()
+
+        def on_ok():
+            text = link.get().strip()
+            if busy or not text:
+                return
+            if not songlinks.looks_like(text, service):
+                messagebox.showerror(app_name, f"That doesn't look like a {service} song link.\n\nExpected something "
+                                     f"like:\n{songlinks.examples[service]}", parent=dialog_root)
+                return
+            busy["on"] = True
+            ok_button.state(["disabled"])
+            status.configure(text="Looking it up...")
+
+            def look_up():
+                try:
+                    song, error = songlinks.resolve(text, service), None
+                except ValueError as e:
+                    song, error = None, str(e)
+                except Exception as e:
+                    song, error = None, f"Couldn't read that link: {e}"
+                self._ui(finish, song, error)
+            threading.Thread(target=look_up, daemon=True).start()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=4, column=0, pady=(section_gap, 16))
+        ttk.Button(buttons, text="Cancel", command=dialog_root.destroy).pack(side="left", padx=(0, 6))
+        ok_button = ttk.Button(buttons, text="Save", command=on_ok, style=accent_button)
+        ok_button.pack(side="left")
+        dialog_root.bind("<Return>", lambda e: on_ok())
+        dialog_root.bind("<Escape>", lambda e: dialog_root.destroy())
+        entry.focus_set()
+        entry.select_range(0, "end")
+        dialog_root.wait_window()
+        song = result.get("song")
+        if not song:
+            return False
+        self._answered.append((pair, service))
+        logging.getLogger("main").info("Linked: '%s - %s' is '%s - %s' (%s) on %s", source.get("title"),
+                                       source.get("artist"), song.get("title"), song.get("artist"),
+                                       song.get("uri") or song.get("id"), service, extra={"feed": False})
+        self._refresh_questions(notify=False)
+        return True
 
     def _sync_answered(self):
         # one sync per platform the answers are about, towards it, for just those pairs
@@ -2114,11 +2207,8 @@ class ScrapifyApp:
         self.match_mode_var = tk.StringVar(value=self.config.get("match_mode", "automatic"))
         for value, label, note in (
                 ("automatic", "Automatic", "Scrapify decides every song by itself."),
-                ("semi", "Semi-automatic", "When Scrapify isn't sure two songs are the same, it asks you on the "
-                                           "Sync tab, with a tick to add it or a cross for each song, instead of "
-                                           "guessing. That includes songs it couldn't find: it shows the closest one "
-                                           "it saw. Leave them unanswered and syncing carries on. Your answers are "
-                                           "remembered."),
+                ("semi", "Semi-automatic", "Asks you on the Sync tab about songs it's unsure of or can't find."
+                                           " Unanswered ones never hold up a sync."),
         ):
             ttk.Radiobutton(box, text=label, value=value, variable=self.match_mode_var,
                             command=self._toggle_setting(self.match_mode_var, "match_mode")).pack(
