@@ -21,6 +21,7 @@ from tkinter import ttk
 import accent as gradient
 import manage
 from browsersessioncommon import AuthError
+from activityfeed import rtl_words
 from matcher import normalize
 
 try:
@@ -395,14 +396,14 @@ class SongList(ttk.Frame):
             if self.show_playlist and room_left > 50:
                 name = self._fit(row["playlist"]["name"] or "Untitled", self.small_font, min(120, room_left))
                 if name:
-                    c.create_text(right, mid, text=name, fill=p["muted"], font=self.small_font, anchor="e")
+                    c.create_text(right, mid, text=rtl_words(name), fill=p["muted"], font=self.small_font, anchor="e")
                     right -= self.small_font.measure(name) + 12
             # the title over the artist
             nx = tx + song_thumb_size + 10
             room = right - nx
-            c.create_text(nx, mid - 9, text=self._fit(track.get("title") or "?", self.title_font, room),
+            c.create_text(nx, mid - 9, text=rtl_words(self._fit(track.get("title") or "?", self.title_font, room)),
                           fill=p["fg"], font=self.title_font, anchor="w")
-            c.create_text(nx, mid + 10, text=self._fit(track.get("artist") or "", self.artist_font, room),
+            c.create_text(nx, mid + 10, text=rtl_words(self._fit(track.get("artist") or "", self.artist_font, room)),
                           fill=p["muted"], font=self.artist_font, anchor="w")
         if self.insert_at is not None:
             y = self.insert_at * song_row_height - self.top
@@ -657,7 +658,7 @@ class PlatformPane(ttk.Frame):
         name = title_of(p)
         if not p.get("editable"):
             name += "  (read-only)"
-        item = self.tree.insert("", "end", text=f"  {name}", values=(count,), tags=self.tags_for(p), **kwargs)
+        item = self.tree.insert("", "end", text=f"  {rtl_words(name)}", values=(count,), tags=self.tags_for(p), **kwargs)
         self.items[item] = p
 
     def refresh_images(self):

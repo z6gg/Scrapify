@@ -66,6 +66,38 @@ def _reads_rtl(text):
     return has_arabic(text) and not re.search("[A-Za-z]", text)
 
 
+def rtl_words(text):
+    """text as tk on windows should be given it to show arabic right: tk joins and shapes the letters
+    of each word but lays the words out left to right, so "سلام الله" comes out as "الله سلام".
+    each stretch of arabic words (with the numbers and marks between them) is turned around, latin
+    words keep their place"""
+    if not text or not has_arabic(text):
+        return text
+    tokens = re.split(r"(\s+)", text)
+    words = [i for i, t in enumerate(tokens) if t and not t.isspace()]
+    out, run = list(tokens), []
+
+    def flush():
+        # a run is turned around between its first and last arabic word, spaces and all
+        while run and not has_arabic(tokens[run[-1]]):
+            run.pop()
+        if len(run) > 1:
+            span = tokens[run[0]:run[-1] + 1]
+            out[run[0]:run[-1] + 1] = span[::-1]
+        run.clear()
+
+    for i in words:
+        t = tokens[i]
+        if has_arabic(t) and not re.search("[A-Za-z]", t):
+            run.append(i)
+        elif run and not re.search("[A-Za-z]", t):
+            run.append(i)  # a number or a dash inside arabic words reads with them
+        else:
+            flush()
+    flush()
+    return "".join(out)
+
+
 def _gap(source, match):
     a, b = (source or {}).get("duration"), (match or {}).get("duration")
     if not a or not b or abs(a - b) <= 3:
@@ -384,7 +416,7 @@ class ActivityFeed(tk.Frame):
         if artist and _reads_rtl(title) and _reads_rtl(artist):
             parts.reverse()
         for text, tag in parts:
-            self._insert(text, tag, *extra)
+            self._insert(rtl_words(text), tag, *extra)
 
     def _render_song(self, song, pair, dry_run):
         status, match = song["status"], song.get("match")

@@ -575,7 +575,7 @@ class SongChecklist(ttk.LabelFrame):
                 continue
             shown += 1
             label = f"{track['title']} - {track['artist']}" if track.get("artist") else track["title"]
-            item = self.tree.insert("", "end", values=(self._mark(track), label))
+            item = self.tree.insert("", "end", values=(self._mark(track), activityfeed.rtl_words(label)))
             self.rows[item] = track
         if query:
             self.status_var.set(f"{shown} of {len(self.cached_tracks)} songs match.")
@@ -1613,7 +1613,7 @@ class ScrapifyApp:
             name += f" - {source['artist']}"
         ttk.Label(dialog, text=f"The link to this song on {service}:", wraplength=480, justify="left").grid(
             row=0, column=0, sticky="w", padx=8, pady=(6, 0))
-        ttk.Label(dialog, text=name, font="SunValleyBodyStrongFont" if sv_ttk else None, wraplength=480,
+        ttk.Label(dialog, text=activityfeed.rtl_words(name), font="SunValleyBodyStrongFont" if sv_ttk else None, wraplength=480,
                   justify="left").grid(row=1, column=0, sticky="w", padx=8, pady=(2, 6))
         link = tk.StringVar()
         try:

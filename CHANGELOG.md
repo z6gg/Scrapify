@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.1
+
+- Arabic song, artist and playlist names now show their words in the right order ("سلام الله", not "الله سلام") in the Activity feed, the Manage tab, the song list and the link dialog
+
 ## 1.5.0
 
 - A song Scrapify can't find gets a "Give its link" option in the Activity feed, in both Automatic and Semi-automatic. Paste the song's Spotify or Anghami link and that song is used on every sync from then on
